@@ -6,10 +6,10 @@
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: VisionAssistant 3.0.0\n"
+"Project-Id-Version: VisionAssistant 3.1.0\n"
 "Report-Msgid-Bugs-To: nvda-translations@groups.io\n"
 "POT-Creation-Date: 2025-12-14 14:22+0000\n"
-"PO-Revision-Date: 2025-12-16 08:19+0700\n"
+"PO-Revision-Date: 2025-12-19 06:27+0700\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "Language: vi\n"
@@ -64,8 +64,7 @@ msgstr "Lỗi {name}"
 #. Translators: Error message when update is detected but file is missing
 #: addon/globalPlugins/visionAssistant/__init__.py:226
 msgid "Update found but no .nvda-addon file in release."
-msgstr ""
-"Đã tìm thấy bản cập nhật nhưng không có file.nvda-addon trong phát hành."
+msgstr "Đã tìm thấy bản cập nhật nhưng không có file.nvda-addon trong phát hành."
 
 #. Translators: Message when no update is found
 #: addon/globalPlugins/visionAssistant/__init__.py:230
@@ -237,6 +236,16 @@ msgstr "Kiểm tra cập nhật khi khởi động"
 #: addon/globalPlugins/visionAssistant/__init__.py:487
 msgid "Clean Markdown in Chat"
 msgstr "Xóa Markdown trong cuộc trò chuyện"
+
+#. Translators: Checkbox to enable copying AI responses to clipboard
+#: addon\globalPlugins\visionAssistant\__init__.py:533
+msgid "Copy AI responses to clipboard"
+msgstr "Sao chép phản hồi AI vào bộ nhớ tạm"
+
+#. Translators: Checkbox to skip chat window and only speak AI responses
+#: addon\globalPlugins\visionAssistant\__init__.py:537
+msgid "Direct Output (No Chat Window)"
+msgstr "Đầu ra trực tiếp (không có cửa sổ)"
 
 #. --- Translation Languages Group ---
 #. Translators: Title of the settings group for translation languages configuration
@@ -470,6 +479,11 @@ msgstr "Sửa ngữ pháp & Dịch"
 msgid "Explain"
 msgstr "giải thích"
 
+#. Translators: Prefix for custom prompts in the Refine menu
+#: addon/globalPlugins/visionAssistant/__init__.py:1060
+msgid "Custom: "
+msgstr "tùy chỉnh: "
+
 #. Translators: Title of the Refine dialog
 #: addon/globalPlugins/visionAssistant/__init__.py:988
 msgid "Choose action:"
@@ -527,6 +541,16 @@ msgstr "Đang tải lên và phân tích..."
 #: addon/globalPlugins/visionAssistant/__init__.py:1210
 msgid "Document ready. Ask your question."
 msgstr "Tài liệu đã sẵn sàng. Đặt câu hỏi của bạn."
+
+#. Translators: Title for the direct question dialog
+#: addon\globalPlugins\visionAssistant\__init__.py:1354
+msgid "Ask about document"
+msgstr "Câu hỏi về tài liệu"
+
+#. Translators: Label for the text entry in direct question dialog
+#: addon\globalPlugins\visionAssistant\__init__.py:1356
+msgid "Enter your question:"
+msgstr "Nhập câu hỏi của bạn:"
 
 #: addon/globalPlugins/visionAssistant/__init__.py:1244
 #, python-brace-format
@@ -671,24 +695,14 @@ msgstr ""
 #. Translators: what's new content for the add-on version to be shown in the add-on store
 #: buildVars.py:27
 msgid ""
-"## Changes for 2.9\n"
-"*   **Added French and Turkish translations.**\n"
-"*   **Formatted View:** Added a \"View Formatted\" button to view chat with "
-"HTML styling.\n"
-"*   **Markdown Setting:** Added \"Clean Markdown in Chat\" option to view "
-"raw output.\n"
-"*   **Dialog Management:** Fixed focus issues and prevented duplicate "
-"windows.\n"
-"*   **UX Improvements:** Standardized file dialogs and removed redundant "
-"speech messages."
+"Changes for 3.1.0\n"
+"⦁\tDirect Output Mode: Added an option to skip the chat dialog and hear AI "
+"responses directly via speech for a faster and more seamless experience.\n"
+"⦁\tClipboard Integration: Added a new setting to automatically copy AI responses to "
+"the clipboard."
 msgstr ""
-"## Thay đổi cho 2.9\\n\n"
-"*   **Đã thêm bản dịch tiếng Pháp và tiếng Thổ nhĩ kì.**\\n\n"
-"*   **Xem định dạng:** Đã thêm nút \"Xem định dạng\" để xem trò chuyện với "
-"HTML.\\n\n"
-"*   **cài đặt markdown:** Đã thêm tùy chọn \"Clean Markdown in Chat\" để "
-"xem kết quả thô.\\n\n"
-"*   **Quản lí hộp thoại:** Đã khắc phục sự cố tiêu điểm và ngăn chặn các "
-"cửa sổ trùng lặp.\\n\n"
-"*   **Cải tiến UX:** Hộp thoại tập tin được tiêu chuẩn hóa và loại bỏ các "
-"thông báo lời nói dư thừa."
+"Thay đổi cho3.1.0\n"
+"⦁\tChế độ đầu ra trực tiếp: Đã thêm tùy chọn bỏ qua hộp thoại trò chuyện và nghe AI "
+"phản hồi trực tiếp qua lời nói để có trải nghiệm nhanh hơn và liền mạch hơn.\n"
+"⦁\tTích hợp bộ nhớ tạm: Đã thêm cài đặt mới để tự động sao chép AI Phản hồi vạo bộ "
+"nhớ tạm."
