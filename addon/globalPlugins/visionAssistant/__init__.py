@@ -1519,12 +1519,26 @@ class DocumentViewerDialog(wx.Dialog):
         self.load_page(self.start_page + self.cmb_pages.GetSelection())
 
     def on_view(self, event):
-        text = self.txt_content.GetValue()
-        if not text: return
-        html = markdown_to_html(text, full_page=False)
+        full_html = []
+        for i in range(self.start_page, self.end_page + 1):
+            if i in self.page_cache:
+                page_text = self.page_cache[i]
+                page_content = markdown_to_html(page_text, full_page=False)
+                # Translators: Heading for each page in the formatted content view.
+                page_label = _("Page {num}").format(num=i+1)
+                full_html.append(f"<h2>{page_label}</h2>")
+                full_html.append(page_content)
+                full_html.append("<hr>")
+        
+        if not full_html:
+            text = self.txt_content.GetValue()
+            if not text: return
+            full_html.append(markdown_to_html(text, full_page=False))
+        
+        combined_html = "".join(full_html)
         try:
             # Translators: Title of the formatted result window
-            ui.browseableMessage(html, _("Formatted Content"), isHtml=True)
+            ui.browseableMessage(combined_html, _("Formatted Content"), isHtml=True)
         except Exception as e:
             show_error_dialog(str(e))
 
@@ -1834,16 +1848,17 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                 # Translators: Error when PyMuPDF is missing
                 wx.CallAfter(wx.MessageBox, _("PyMuPDF library is missing."), "Error", wx.ICON_ERROR)
                 return
-            
             v_doc = VirtualDocument(paths)
             v_doc.scan() 
-            
             if v_doc.total_pages == 0:
                  # Translators: Error when no pages found
                  wx.CallAfter(wx.MessageBox, _("No readable pages found."), "Error", wx.ICON_ERROR)
                  return
-
-            wx.CallAfter(self._show_range_dialog, v_doc)
+            if v_doc.total_pages == 1:
+                settings = {'start': 0, 'end': 0, 'translate': False, 'lang': TARGET_NAMES[0]}
+                wx.CallAfter(lambda: DocumentViewerDialog(gui.mainFrame, v_doc, settings).Show())
+            else:
+                wx.CallAfter(self._show_range_dialog, v_doc)
         except Exception as e:
             log.error(f"Error opening files: {e}", exc_info=True)
 
@@ -2585,16 +2600,16 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                 # Translators: Error when PyMuPDF is missing
                 wx.CallAfter(wx.MessageBox, _("PyMuPDF library is missing."), "Error", wx.ICON_ERROR)
                 return
-            
             v_doc = VirtualDocument(paths)
             v_doc.scan()
-            
             if v_doc.total_pages == 0:
                 # Translators: Error when no pages found
                 wx.CallAfter(wx.MessageBox, _("No readable pages found."), "Error", wx.ICON_ERROR)
                 return
-
-            wx.CallAfter(self._show_ocr_range_dialog, v_doc)
+            if v_doc.total_pages == 1:
+                threading.Thread(target=self._process_file_ocr, args=(v_doc, 0, 0), daemon=True).start()
+            else:
+                wx.CallAfter(self._show_ocr_range_dialog, v_doc)
         except Exception as e:
             log.error(f"Error preparing OCR: {e}")
 
