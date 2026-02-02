@@ -427,8 +427,8 @@ class ChromeOCREngine:
     @staticmethod
     def recognize(image_bytes):
         key = CHROME_OCR_KEYS[0]
-        url = f"https://ckintersect-pa.googleapis.com/v1/intersect/pixels?key={key}"
-        headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+        url = "https://ckintersect-pa.googleapis.com/v1/intersect/pixels"
+        headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "x-goog-api-key": key}
         payload = {"imageRequests": [{"engineParameters": [{"ocrParameters": {}}], "imageBytes": base64.b64encode(image_bytes).decode('utf-8'), "imageId": str(uuid4())}]}
         try:
             req = request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method="POST")
@@ -578,7 +578,7 @@ class GeminiHandler:
     def translate(text, target_lang):
         def _logic(key, txt, lang):
             model = config.conf["VisionAssistant"]["model_name"]
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             payload = {"contents": [{"parts": [{"text": f"Translate to {lang}. Output ONLY translation."}, {"text": txt}]}]}
             req = request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={"Content-Type": "application/json", "x-goog-api-key": key})
             with GeminiHandler._get_opener().open(req, timeout=90) as r:
@@ -589,7 +589,7 @@ class GeminiHandler:
     def ocr_page(image_bytes):
         def _logic(key, img_data):
             model = config.conf["VisionAssistant"]["model_name"]
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             payload = {"contents": [{"parts": [{"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(img_data).decode('utf-8')}}, {"text": "Extract all visible text from this image. Strictly preserve original formatting (headings, lists, tables) using Markdown. Do not output any system messages or code block backticks (```). Output ONLY the raw content."}]}]}
             req = request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={"Content-Type": "application/json", "x-goog-api-key": key})
             with GeminiHandler._get_opener().open(req, timeout=90) as r:
@@ -611,7 +611,7 @@ class GeminiHandler:
         for i, key in enumerate(keys):
             try:
                 f_size = os.path.getsize(file_path)
-                init_url = f"{base_url}/upload/v1beta/files?key={key}"
+                init_url = f"{base_url}/upload/v1beta/files"
                 headers = {"X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start", "X-Goog-Upload-Header-Content-Length": str(f_size), "X-Goog-Upload-Header-Content-Type": mime_type, "Content-Type": "application/json", "x-goog-api-key": key}
                 
                 req = request.Request(init_url, data=json.dumps({"file": {"display_name": "batch"}}).encode(), headers=headers, method="POST")
@@ -625,7 +625,7 @@ class GeminiHandler:
                 
                 active = False
                 for _ in range(30):
-                    req_check = request.Request(f"{base_url}/v1beta/{name}?key={key}", headers={"x-goog-api-key": key})
+                    req_check = request.Request(f"{base_url}/v1beta/{name}", headers={"x-goog-api-key": key})
                     with opener.open(req_check, timeout=30) as r:
                         state = json.loads(r.read().decode()).get('state')
                         if state == "ACTIVE":
@@ -642,7 +642,7 @@ class GeminiHandler:
 
                 GeminiHandler._register_file_uri(uri, key)
                 
-                url = f"{base_url}/v1beta/models/{model}:generateContent?key={key}"
+                url = f"{base_url}/v1beta/models/{model}:generateContent"
                 prompt = "Extract all visible text from this document. Strictly preserve original formatting (headings, lists, tables) using Markdown. You MUST insert the exact delimiter '[[[PAGE_SEP]]]' immediately after the content of every single page. Do not output any system messages or code block backticks (```). Output ONLY the raw content."
                 contents = [{"parts": [{"file_data": {"mime_type": mime_type, "file_uri": uri}}, {"text": prompt}]}]
                 
@@ -675,7 +675,7 @@ class GeminiHandler:
             model = config.conf["VisionAssistant"]["model_name"]
             proxy_url = config.conf["VisionAssistant"]["proxy_url"].strip()
             base_url = proxy_url.rstrip('/') if proxy_url else "https://generativelanguage.googleapis.com"
-            url = f"{base_url}/v1beta/models/{model}:generateContent?key={key}"
+            url = f"{base_url}/v1beta/models/{model}:generateContent"
             
             contents = list(hist)
             if uri: 
@@ -704,7 +704,7 @@ class GeminiHandler:
         for key in keys:
             try:
                 f_size = os.path.getsize(file_path)
-                init_url = f"{base_url}/upload/v1beta/files?key={key}"
+                init_url = f"{base_url}/upload/v1beta/files"
                 headers = {"X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start", "X-Goog-Upload-Header-Content-Length": str(f_size), "X-Goog-Upload-Header-Content-Type": mime_type, "Content-Type": "application/json", "x-goog-api-key": key}
                 req = request.Request(init_url, data=json.dumps({"file": {"display_name": os.path.basename(file_path)}}).encode(), headers=headers, method="POST")
                 with opener.open(req, timeout=60) as r: upload_url = r.headers.get("x-goog-upload-url")
@@ -714,7 +714,7 @@ class GeminiHandler:
                     res = json.loads(r.read().decode())
                     uri, name = res['file']['uri'], res['file']['name']
                 for _ in range(30):
-                    req_check = request.Request(f"{base_url}/v1beta/{name}?key={key}", headers={"x-goog-api-key": key})
+                    req_check = request.Request(f"{base_url}/v1beta/{name}", headers={"x-goog-api-key": key})
                     with opener.open(req_check, timeout=30) as r:
                         state = json.loads(r.read().decode()).get('state')
                         if state == "ACTIVE":
@@ -736,7 +736,7 @@ class GeminiHandler:
 
             proxy_url = config.conf["VisionAssistant"]["proxy_url"].strip()
             base_url = proxy_url.rstrip('/') if proxy_url else "https://generativelanguage.googleapis.com"
-            url = f"{base_url}/v1beta/models/{tts_model}:generateContent?key={key}"
+            url = f"{base_url}/v1beta/models/{tts_model}:generateContent"
             
             payload = {
                 "contents": [{"parts": [{"text": txt}]}],
@@ -2005,7 +2005,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             file_size = os.path.getsize(file_path)
             filename = os.path.basename(file_path)
             
-            initial_url = f"{base_url}/upload/v1beta/files?key={api_key}"
+            initial_url = f"{base_url}/upload/v1beta/files"
             headers_init = {
                 "X-Goog-Upload-Protocol": "resumable",
                 "X-Goog-Upload-Command": "start",
@@ -2041,7 +2041,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     
             if not file_name_id: return None
 
-            check_url = f"{base_url}/v1beta/{file_name_id}?key={api_key}"
+            check_url = f"{base_url}/v1beta/{file_name_id}"
             for _ in range(30):
                 try:
                     req_check = request.Request(check_url, headers={"x-goog-api-key": api_key})
@@ -2110,7 +2110,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             model = config.conf["VisionAssistant"]["model_name"]
             proxy_url = config.conf["VisionAssistant"]["proxy_url"].strip()
             base_url = proxy_url.rstrip('/') if proxy_url else "https://generativelanguage.googleapis.com"
-            url = f"{base_url}/v1beta/models/{model}:generateContent?key={key}"
+            url = f"{base_url}/v1beta/models/{model}:generateContent"
             headers = {"Content-Type": "application/json; charset=UTF-8", "x-goog-api-key": key}
             
             contents = []
