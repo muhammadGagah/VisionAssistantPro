@@ -51,7 +51,13 @@ Once a document is opened via the **D** command:
 
 ## 3. Custom Prompts & Variables
 
-You can create powerful custom AI commands in Settings using the format: `Name:Prompt Text` (separate multiple commands with `|` or new lines).
+Open **Settings > Prompts > Manage Prompts...** to configure system and custom prompts.
+
+- **Default Prompts tab:** edit built-in prompts used by Refine, Translation, Document Chat, Vision (Navigator Object + Full Screen), Video analysis, Audio (Transcription + Smart Dictation), CAPTCHA, and OCR. You can reset a single prompt or reset all defaults.
+- **Custom Prompts tab:** add, edit, remove, and reorder custom prompts using a list-based interface.
+- **Variables Guide button:** opens a help window with all supported variables and input types.
+
+Compatibility note: existing legacy entries in `Name:Prompt Text` format are still supported.
 
 ### Available Variables
 
