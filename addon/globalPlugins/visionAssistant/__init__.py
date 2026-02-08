@@ -354,7 +354,6 @@ DEFAULT_SYSTEM_PROMPTS = (
 )
 
 PROMPT_VARIABLES_GUIDE = (
-    # Input/context variables.
     ("[selection]", _("Currently selected text"), _("Text")),
     ("[clipboard]", _("Clipboard content"), _("Text")),
     ("[screen_obj]", _("Screenshot of the navigator object"), _("Image")),
@@ -362,22 +361,6 @@ PROMPT_VARIABLES_GUIDE = (
     ("[file_ocr]", _("Select image/PDF/TIFF for text extraction"), _("Image, PDF, TIFF")),
     ("[file_read]", _("Select document for reading"), _("TXT, Code, PDF")),
     ("[file_audio]", _("Select audio file for analysis"), _("MP3, WAV, OGG")),
-    # Refine action tokens.
-    ("[summarize]", _("Shortcut token: inserts summarize instruction"), _("Shortcut")),
-    ("[fix_grammar]", _("Shortcut token: inserts grammar correction instruction"), _("Shortcut")),
-    ("[fix_translate]", _("Shortcut token: inserts grammar + translation instruction"), _("Shortcut")),
-    ("[explain]", _("Shortcut token: inserts explanation instruction"), _("Shortcut")),
-    # Default prompt template placeholders.
-    ("{target_lang}", _("Configured target language"), _("Placeholder")),
-    ("{source_lang}", _("Configured source language"), _("Placeholder")),
-    ("{response_lang}", _("Configured AI response language"), _("Placeholder")),
-    ("{swap_target}", _("Smart-swap fallback language"), _("Placeholder")),
-    ("{smart_swap}", _("Smart-swap enabled flag (True/False)"), _("Placeholder")),
-    ("{swap_instruction}", _("Conditional smart-swap instruction"), _("Placeholder")),
-    ("{text_content}", _("Input text to translate"), _("Placeholder")),
-    ("{width}", _("Captured image width"), _("Placeholder")),
-    ("{height}", _("Captured image height"), _("Placeholder")),
-    ("{captcha_extra}", _("CAPTCHA locale-specific instruction"), _("Placeholder")),
 )
 
 # --- Helpers ---
