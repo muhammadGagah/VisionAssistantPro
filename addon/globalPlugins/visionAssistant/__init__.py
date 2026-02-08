@@ -419,11 +419,24 @@ def parse_custom_prompts_legacy(raw_value):
                 items.append({"name": name, "content": content})
     return items
 
+def _is_legacy_custom_prompt_compatible(item):
+    name = str(item.get("name", "")).strip()
+    content = str(item.get("content", "")).strip()
+    if not name or not content:
+        return False
+    if ":" in name or "|" in name:
+        return False
+    if "|" in content or "\n" in content or "\r" in content:
+        return False
+    return True
+
 def serialize_custom_prompts_legacy(items):
     if not items:
         return ""
     parts = []
     for item in _normalize_custom_prompt_items(items):
+        if not _is_legacy_custom_prompt_compatible(item):
+            continue
         name = str(item.get("name", "")).strip()
         content = str(item.get("content", "")).strip()
         if name and content:
@@ -1532,7 +1545,7 @@ class VisionQADialog(wx.Dialog):
 
 class PromptItemDialog(wx.Dialog):
     def __init__(self, parent, title, name="", prompt_text=""):
-        super().__init__(parent, title=title, size=(620, 260), style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        super().__init__(parent, title=title, size=(620, 360), style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         self.name_ctrl = None
         self.prompt_ctrl = None
 
@@ -1550,12 +1563,12 @@ class PromptItemDialog(wx.Dialog):
         self.prompt_ctrl = wx.TextCtrl(
             self,
             value=prompt_text,
-            style=wx.TE_PROCESS_ENTER,
+            style=wx.TE_MULTILINE | wx.TE_DONTWRAP,
         )
-        main_sizer.Add(self.prompt_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        main_sizer.Add(self.prompt_ctrl, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
-        # Translators: Helper text about custom prompt input limitations.
-        hint = wx.StaticText(self, label=_("Custom prompt text must be a single line and cannot contain '|'."))
+        # Translators: Helper text about custom prompt input capabilities.
+        hint = wx.StaticText(self, label=_("Custom prompt text supports multiple lines and '|' in v2. Legacy versions may not import these prompts."))
         main_sizer.Add(hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
         button_sizer = wx.StdDialogButtonSizer()
@@ -1602,22 +1615,6 @@ class PromptItemDialog(wx.Dialog):
         if not prompt_text:
             # Translators: Validation error for empty prompt text.
             msg = _("Prompt text cannot be empty.")
-            # Translators: Title of validation warning dialog.
-            title = _("Validation Error")
-            wx.MessageBox(msg, title, wx.OK | wx.ICON_WARNING)
-            self.prompt_ctrl.SetFocus()
-            return
-        if "|" in prompt_text:
-            # Translators: Validation error for unsupported separator character in prompt text.
-            msg = _("Prompt text cannot contain '|'.")
-            # Translators: Title of validation warning dialog.
-            title = _("Validation Error")
-            wx.MessageBox(msg, title, wx.OK | wx.ICON_WARNING)
-            self.prompt_ctrl.SetFocus()
-            return
-        if "\n" in prompt_text or "\r" in prompt_text:
-            # Translators: Validation error for unsupported line breaks in custom prompt text.
-            msg = _("Prompt text cannot contain line breaks.")
             # Translators: Title of validation warning dialog.
             title = _("Validation Error")
             wx.MessageBox(msg, title, wx.OK | wx.ICON_WARNING)
@@ -2177,7 +2174,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         config.conf["VisionAssistant"]["skip_chat_dialog"] = self.skipChatDialog.Value
         config.conf["VisionAssistant"]["captcha_mode"] = 'navigator' if self.captchaMode.GetSelection() == 0 else 'fullscreen'
         config.conf["VisionAssistant"]["custom_prompts_v2"] = serialize_custom_prompts_v2(self.customPromptItems)
-        # Keep legacy mirror for backward compatibility with previous add-on versions.
+        # Keep a best-effort legacy mirror for backward compatibility with previous add-on versions.
         config.conf["VisionAssistant"]["custom_prompts"] = serialize_custom_prompts_legacy(self.customPromptItems)
         config.conf["VisionAssistant"]["default_refine_prompts"] = serialize_default_prompt_overrides(self.defaultPromptItems)
         config.conf["VisionAssistant"]["ocr_engine"] = OCR_ENGINES[self.ocr_sel.GetSelection()][1]
