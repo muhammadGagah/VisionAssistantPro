@@ -1649,7 +1649,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         promptsSizer = wx.StaticBoxSizer(promptsBox, wx.VERTICAL)
         pHelper = gui.guiHelper.BoxSizerHelper(promptsBox, sizer=promptsSizer)
         # Translators: Description for the prompt manager button.
-        pHelper.addItem(wx.StaticText(promptsBox, label=_("Manage default system prompts and custom refine prompts.")))
+        pHelper.addItem(wx.StaticText(promptsBox, label=_("Manage default and custom prompts.")))
         # Translators: Button label to open prompt manager dialog.
         self.managePromptsBtn = wx.Button(promptsBox, label=_("Manage Prompts..."))
         self.managePromptsBtn.Bind(wx.EVT_BUTTON, self.onManagePrompts)
