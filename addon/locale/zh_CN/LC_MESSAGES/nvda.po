@@ -898,8 +898,8 @@ msgstr "提示词"
 
 #. Translators: Description for the prompt manager button.
 #: addon\globalPlugins\visionAssistant\__init__.py:1655
-msgid "Manage default system prompts and custom refine prompts."
-msgstr "管理默认系统提示词和自定义润色提示词。"
+msgid "Manage default and custom prompts."
+msgstr "管理默认和自定义提示词。"
 
 #. Translators: Button label to open prompt manager dialog.
 #: addon\globalPlugins\visionAssistant\__init__.py:1657
