@@ -261,10 +261,8 @@ DEFAULT_SYSTEM_PROMPTS = (
     },
     {
         "key": "document_chat_ack",
-        # Translators: Section header for advanced/internal prompts in Prompt Manager.
-        "section": _("Advanced"),
-        # Translators: Label for the AI's acknowledgement reply in document chat.
-        "label": _("Document Chat Bootstrap Reply"),
+        "section": "Advanced",
+        "label": "Document Chat Bootstrap Reply",
         "internal": True,
         "prompt": "Context received. Ready for questions.",
     },
@@ -298,19 +296,15 @@ DEFAULT_SYSTEM_PROMPTS = (
     },
     {
         "key": "vision_followup_context",
-        # Translators: Section header for advanced/internal prompts in Prompt Manager.
-        "section": _("Advanced"),
-        # Translators: Label for the follow-up context in image analysis chat.
-        "label": _("Vision Follow-up Context"),
+        "section": "Advanced",
+        "label": "Vision Follow-up Context",
         "internal": True,
         "prompt": "Image Context. Target Language: {response_lang}",
     },
     {
         "key": "vision_followup_suffix",
-        # Translators: Section header for advanced/internal prompts in Prompt Manager.
-        "section": _("Advanced"),
-        # Translators: Label for the rule enforced during image analysis follow-up questions.
-        "label": _("Vision Follow-up Answer Rule"),
+        "section": "Advanced",
+        "label": "Vision Follow-up Answer Rule",
         "internal": True,
         "prompt": "Answer strictly in {response_lang}",
     },
@@ -407,10 +401,8 @@ DEFAULT_SYSTEM_PROMPTS = (
     },
     {
         "key": "refine_files_only",
-        # Translators: Section header for advanced/internal prompts in Prompt Manager.
-        "section": _("Advanced"),
-        # Translators: Label for the fallback prompt when only files are provided in Refine.
-        "label": _("Refine Files-Only Fallback"),
+        "section": "Advanced",
+        "label": "Refine Files-Only Fallback",
         "internal": True,
         "prompt": "Analyze these files.",
     },
