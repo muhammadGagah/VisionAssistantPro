@@ -1,14 +1,5 @@
-\## Changes for 4.5
-
-\*\*Advanced Prompt Manager:\*\* Introduced a dedicated management dialog in settings to customize default system prompts and manage user-defined prompts with full support for adding, editing, reordering, and previewing.
-
-\*\*Comprehensive Proxy Support:\*\* Resolved network connectivity issues by ensuring that user-configured proxy settings are strictly applied to all API requests, including translation, OCR, and speech generation.
-
-\*\*Automated Data Migration:\*\* Integrated a smart migration system to automatically upgrade legacy prompt configurations to a robust v2 JSON format upon the first run without data loss.
-
-\*\*Updated Compatibility (2025.1):\*\* Set the minimum required NVDA version to 2025.1 due to library dependencies in advanced features like the Document Reader to ensure stable performance.
-
-\*\*Optimized Settings Interface:\*\* Streamlined the settings interface by reorganizing prompt management into a separate dialog, providing a cleaner and more accessible user experience.
-
-\*\*Prompt Variables Guide:\*\* Added a built-in guide within the prompt dialogs to help users easily identify and use dynamic variables such as \[selection], \[clipboard], and \[screen\_obj].
-
+## Changes for 4.6
+* **Interactive Result Recall:** Added the **Space** key to the command layer, allowing users to instantly reopen the last AI response in a chat window for follow-up questions, even when "Direct Output" mode is active.
+* **Telegram Community Hub:** Added an "Official Telegram Channel" link to the NVDA Tools menu, providing a quick way to stay updated with the latest news, features, and releases.
+* **Enhanced Response Stability:** Optimized the core logic for Translation, OCR, and Vision features to ensure more reliable performance and a smoother experience when using direct speech output.
+* **Improved Interface Guidance:** Updated the settings descriptions and documentation to better explain the new recall system and how it works alongside the direct output settings.

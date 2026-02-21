@@ -14,7 +14,7 @@ Go to **NVDA Menu > Preferences > Settings > Vision Assistant Pro**.
 - **OCR Engine:** Choose between **Chrome (Fast)** for quick results or **Gemini (Formatted)** for superior layout preservation and table recognition.
 - **TTS Voice:** Select the preferred voice style for generating audio files from document pages.
 - **Smart Swap:** Automatically swaps languages if the source text matches the target language.
-- **Direct Output:** Skips the chat window and announces the AI response directly via speech.
+- **Direct Output:** Skips the chat window and announces the AI response directly via speech. **Note:** Even in this mode, you can press **Space** within the command layer to reopen the last result in a chat dialog.
 - **Clipboard Integration:** Automatically copies the AI response to the clipboard.
 
 ## 2. Command Layer & Shortcuts
@@ -30,7 +30,7 @@ To prevent keyboard conflicts, this add-on uses a **Command Layer**.
 | **R**         | Text Refiner             | Summarize, Fix Grammar, Explain, or run **Custom Prompts**.                 |
 | **V**         | Object Vision            | Describes the current navigator object.                                     |
 | **O**         | Full Screen Vision       | Analyzes the entire screen layout and content.                              |
-| **Shift + V** | Online Video Analysis    | Analyze **YouTube**, **Instagram**, or **Twitter (X)** videos via URL.      |
+| **Shift + V** | Online Video Analysis    | Analyze **YouTube**, **Instagram**, **TikTok**, or **Twitter (X)** videos.  |
 | **D**         | Document Reader          | Advanced reader for PDF and images with page range selection.               |
 | **F**         | File OCR                 | Direct text recognition from selected image, PDF, or TIFF files.            |
 | **A**         | Audio Transcription      | Transcribe MP3, WAV, or OGG files into text.                                |
@@ -38,6 +38,7 @@ To prevent keyboard conflicts, this add-on uses a **Command Layer**.
 | **S**         | Smart Dictation          | Converts speech to text. Press to start recording, again to stop/type.      |
 | **L**         | Status Reporting         | Announces current progress (e.g., "Scanning...", "Idle").                   |
 | **U**         | Update Check             | Manually check GitHub for the latest version of the add-on.                 |
+| **Space**     | Recall Last Result       | Shows the last AI response in a chat dialog for review or follow-up.        |
 | **H**         | Commands Help            | Displays a list of all available shortcuts within the command layer.        |
 
 ### 2.1 Document Reader Shortcuts (Inside Viewer)
@@ -78,13 +79,26 @@ Open **Settings > Prompts > Manage Prompts...** to configure system and custom p
 
 ***
 **Note:** An active internet connection is required for all AI features. Multi-page documents and TIFFs are processed automatically.
+
+## 4. Support & Community
+
+Stay updated with the latest news, features, and releases:
+- **Telegram Channel:** [t.me/VisionAssistantPro](https://t.me/VisionAssistantPro)
+- **GitHub Issues:** For bug reports and feature requests.
+
+## Changes for 4.6
+* **Interactive Result Recall:** Added the **Space** key to the command layer, allowing users to instantly reopen the last AI response in a chat window for follow-up questions, even when "Direct Output" mode is active.
+* **Telegram Community Hub:** Added an "Official Telegram Channel" link to the NVDA Tools menu, providing a quick way to stay updated with the latest news, features, and releases.
+* **Enhanced Response Stability:** Optimized the core logic for Translation, OCR, and Vision features to ensure more reliable performance and a smoother experience when using direct speech output.
+* **Improved Interface Guidance:** Updated the settings descriptions and documentation to better explain the new recall system and how it works alongside the direct output settings.
+
 ## Changes for 4.5
-**Advanced Prompt Manager:** Introduced a dedicated management dialog in settings to customize default system prompts and manage user-defined prompts with full support for adding, editing, reordering, and previewing.
-**Comprehensive Proxy Support:** Resolved network connectivity issues by ensuring that user-configured proxy settings are strictly applied to all API requests, including translation, OCR, and speech generation.
-**Automated Data Migration:** Integrated a smart migration system to automatically upgrade legacy prompt configurations to a robust v2 JSON format upon the first run without data loss.
-**Updated Compatibility (2025.1):** Set the minimum required NVDA version to 2025.1 due to library dependencies in advanced features like the Document Reader to ensure stable performance.
-**Optimized Settings Interface:** Streamlined the settings interface by reorganizing prompt management into a separate dialog, providing a cleaner and more accessible user experience.
-**Prompt Variables Guide:** Added a built-in guide within the prompt dialogs to help users easily identify and use dynamic variables such as [selection], [clipboard], and [screen_obj].
+* **Advanced Prompt Manager:** Introduced a dedicated management dialog in settings to customize default system prompts and manage user-defined prompts with full support for adding, editing, reordering, and previewing.
+* **Comprehensive Proxy Support:** Resolved network connectivity issues by ensuring that user-configured proxy settings are strictly applied to all API requests, including translation, OCR, and speech generation.
+* **Automated Data Migration:** Integrated a smart migration system to automatically upgrade legacy prompt configurations to a robust v2 JSON format upon the first run without data loss.
+* **Updated Compatibility (2025.1):** Set the minimum required NVDA version to 2025.1 due to library dependencies in advanced features like the Document Reader to ensure stable performance.
+* **Optimized Settings Interface:** Streamlined the settings interface by reorganizing prompt management into a separate dialog, providing a cleaner and more accessible user experience.
+* **Prompt Variables Guide:** Added a built-in guide within the prompt dialogs to help users easily identify and use dynamic variables such as [selection], [clipboard], and [screen_obj].
 
 ## Changes for 4.0.3
 *   **Enhanced Network Resilience:** Added an automatic retry mechanism to better handle unstable internet connections and temporary server errors, ensuring more reliable AI responses.

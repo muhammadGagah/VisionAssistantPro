@@ -16,7 +16,7 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"X-Generator: Poedit 3.6\n"
+"X-Generator: Poedit 3.8\n"
 
 #. Translators: Label for the button to copy the TON cryptocurrency wallet address.
 #: addon\globalPlugins\visionAssistant\donate_dialog.py:18
@@ -59,22 +59,6 @@ msgstr "Apoie o futuro do {name}"
 #. Translators: The main message of the donation dialog.
 #: addon\globalPlugins\visionAssistant\donate_dialog.py:56
 #, python-brace-format
-#| msgid ""
-#| "{name} is a project born from a personal vision to bridge the gap between "
-#| "AI and true accessibility. The initial concept and many of the features "
-#| "you enjoy were created from my own ideas to solve real challenges and "
-#| "provide a new level of digital independence.\n"
-#| "\n"
-#| "I take great pride in thinking through every detail and turning both my "
-#| "own innovations and your valuable requests into reality. Ensuring this "
-#| "tool remains fast, stable, and constantly evolving is a continuous "
-#| "creative journey that I am passionate about pursuing.\n"
-#| "\n"
-#| "If this assistant has brought value to your daily life, your support is a "
-#| "wonderful way to show appreciation for the original work and the "
-#| "dedication behind it. It provides the extra motivation to keep the "
-#| "inspiration alive and ensures we can continue to push the boundaries "
-#| "together. Thank you for being part of this mission!"
 msgid ""
 "{name} is a project born from a personal vision to bridge the gap between AI "
 "and true accessibility. The initial concept and many of the features you "
@@ -95,25 +79,25 @@ msgid ""
 "wonderful way to show appreciation for the original work and the dedication "
 "behind it. Thank you for being part of this mission!"
 msgstr ""
-"{name} é um projeto que nasceu de uma visão pessoal para reduzir a distância "
+"{name} é um projeto que nasce de uma visão pessoal para preencher a lacuna "
 "entre a IA e a verdadeira acessibilidade. O conceito inicial e muitos dos "
-"recursos que você utiliza foram criados a partir das minhas próprias ideias "
-"para resolver desafios reais e proporcionar um novo nível de independência "
+"recursos que você gosta foram criados a partir de minhas próprias ideias "
+"para resolver desafios reais e fornecer um novo nível de independência "
 "digital.\n"
 "\n"
-"Tenho grande orgulho em pensar em cada detalhe e transformar tanto minhas "
-"próprias inovações quanto suas valiosas sugestões em realidade. Garantir que "
-"esta ferramenta permaneça rápida, estável e em constante evolução é uma "
-"jornada criativa contínua que tenho paixão em seguir.\n"
+"Tenho muito orgulho de pensar em cada detalhe e transformar minhas próprias "
+"inovações e suas valiosas solicitações em realidade. Garantir que esta "
+"ferramenta permaneça rápida, estável e em constante evolução é uma jornada "
+"criativa contínua que adoro seguir.\n"
 "\n"
-"Nota Importante: Devido a restrições bancárias internacionais na minha "
-"região, não posso utilizar PayPal ou Stripe. Se você desejar apoiar este "
-"projeto, pode doar por meio de Criptomoeda ou enviando um Apple Gift Card "
-"(região dos EUA) para: {email}\n"
+"Observação importante: devido a restrições bancárias internacionais na minha "
+"região, não consigo usar PayPal ou Stripe. Se desejar apoiar este projeto, "
+"você pode doar via criptomoeda ou enviando um vale-presente da Apple (região "
+"dos EUA) para: {email}\n"
 "\n"
-"Se este assistente trouxe valor ao seu dia a dia, seu apoio é uma forma "
-"maravilhosa de demonstrar apreço pelo trabalho original e pela dedicação por "
-"trás dele. Obrigado por fazer parte desta missão!"
+"Se este assistente agregou valor ao seu dia a dia, seu apoio é uma ótima "
+"forma de demonstrar apreço pelo trabalho original e pela dedicação por trás "
+"dele. Obrigado por fazer parte desta missão!"
 
 #. Translators: Label for prompt name input field.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:22
@@ -125,13 +109,13 @@ msgstr "Nome:"
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:28
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:189
 msgid "Prompt Text:"
-msgstr "Texto da mensagem:"
+msgstr "Texto do Prompt:"
 
 #. Translators: Button label to open the variables help dialog.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:47
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:142
 msgid "Variables Guide"
-msgstr "Guia de variáveis"
+msgstr "Guia de Variáveis"
 
 #. Translators: Validation error for empty prompt name.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:64
@@ -145,18 +129,18 @@ msgstr "O nome não pode estar vazio."
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:473
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:501
 msgid "Validation Error"
-msgstr "Erro de validação"
+msgstr "Erro de Validação"
 
 #. Translators: Validation error for empty prompt text.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:72
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:360
 msgid "Prompt text cannot be empty."
-msgstr "O texto da mensagem não pode estar vazio."
+msgstr "O texto do prompt não pode estar vazio."
 
 #. Translators: Title for the prompt variables help dialog.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:95
 msgid "Prompt Variables Guide"
-msgstr "Guia de variáveis de prompt"
+msgstr "Guia de Variáveis do Prompt"
 
 #. Translators: Intro text for the prompt variables help dialog.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:99
@@ -173,13 +157,12 @@ msgstr "Fechar"
 #. Translators: Title for the prompt manager dialog.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:120
 msgid "Prompt Manager"
-msgstr "Gerenciador de prompts"
+msgstr "Gerenciador de Prompts"
 
 #. Translators: Notebook tab for built-in refine prompts.
 #. Translators: Label above the list of default prompt entries.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:132
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:166
-#| msgid "Custom Prompts"
 msgid "Default Prompts"
 msgstr "Prompts Padrão"
 
@@ -193,7 +176,7 @@ msgstr "Prompts Personalizados"
 #. Translators: Note explaining when prompt changes are persisted.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:146
 msgid "Changes are applied only when you press OK."
-msgstr "As alterações são aplicadas somente ao pressionar OK."
+msgstr "As alterações são aplicadas somente quando você pressionar OK."
 
 #. Translators: Button label to reset currently selected default prompt.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:178
@@ -203,12 +186,12 @@ msgstr "Redefinir Selecionado"
 #. Translators: Button label to reset all default prompts.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:183
 msgid "Reset All"
-msgstr "Redefinir tudo"
+msgstr "Redefinir Tudo"
 
 #. Translators: Button label to apply current editor text to the selected default prompt.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:198
 msgid "Apply to Selected"
-msgstr "Aplicar aos selecionados"
+msgstr "Aplicar ao Selecionados"
 
 #. Translators: Button label for adding a custom prompt.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:230
@@ -233,12 +216,12 @@ msgstr "Mover para Cima"
 #. Translators: Button label for moving selected custom prompt down in the list.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:247
 msgid "Move Down"
-msgstr "Mover para Baixo"
+msgstr "Mover para baixo"
 
 #. Translators: Label above the custom prompt preview area.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:256
 msgid "Prompt Preview:"
-msgstr "Prévia do Prompt:"
+msgstr "Visualização do Prompt:"
 
 #. Translators: Validation message shown when required text is missing in a guarded prompt.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:318
@@ -246,8 +229,8 @@ msgstr "Prévia do Prompt:"
 msgid ""
 "This prompt is used by {feature}. To save it, add the required text below:"
 msgstr ""
-"Este prompt é usado por {feature}. Para salvá-lo, adicione o texto "
-"necessário abaixo:"
+"Este prompt é utilizado por {feature}. Para salvá-lo, adicione o texto "
+"obrigatório abaixo:"
 
 #. Translators: Guidance shown after listing missing required text.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:324
@@ -257,7 +240,7 @@ msgstr "Adicione estes itens exatamente como estão escritos e tente novamente."
 #. Translators: Title of validation warning dialog for guarded prompt checks.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:326
 msgid "Required Text Missing"
-msgstr "Texto Necessário Ausente"
+msgstr "Texto obrigatório ausente"
 
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:338
 #, python-brace-format
@@ -268,11 +251,11 @@ msgid ""
 "\n"
 "Do you understand the risk and want to save anyway?"
 msgstr ""
-"Você está editando um prompt usado por {feature}.\n"
+"Você está editando um prompt utilizado por {feature}.\n"
 "\n"
 "Se este prompt for alterado, este recurso pode não funcionar corretamente.\n"
 "\n"
-"Você entende o risco e deseja salvar mesmo assim?"
+"Você compreende o risco e deseja salvar mesmo assim?"
 
 #. Translators: Title of confirmation dialog shown before saving guarded prompts.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:341
@@ -282,12 +265,12 @@ msgstr "Confirmar"
 #. Translators: Confirm button label for guarded prompt save confirmation.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:345
 msgid "Yes, Save Anyway"
-msgstr "Sim, Salvar Mesmo Assim"
+msgstr "Sim, salvar mesmo assim"
 
 #. Translators: Cancel button label for guarded prompt save confirmation.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:347
 msgid "No, Go Back"
-msgstr "Não, Voltar"
+msgstr "Não, voltar"
 
 #. Translators: Message shown after applying changes to the selected default prompt.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:396
@@ -297,7 +280,7 @@ msgstr "Prompt selecionado atualizado."
 #. Translators: Confirmation text before resetting all default prompts.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:409
 msgid "Reset all default prompts to built-in values?"
-msgstr "Redefinir todos os prompts padrão para os valores internos?"
+msgstr "Redefinir todos os prompts padrão para os valores integrados?"
 
 #. Translators: Title of confirmation dialog.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:411
@@ -306,7 +289,6 @@ msgstr "Confirmar redefinição"
 
 #. Translators: Title of dialog for adding a custom prompt.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:466
-#| msgid "Custom Prompts"
 msgid "Add Custom Prompt"
 msgstr "Adicionar Prompt Personalizado"
 
@@ -314,24 +296,23 @@ msgstr "Adicionar Prompt Personalizado"
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:471
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:499
 msgid "A custom prompt with this name already exists."
-msgstr "Um prompt personalizado com este nome já existe."
+msgstr "Já existe um prompt personalizado com esse nome."
 
 #. Translators: Title of the dialog for editing an existing custom prompt.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:490
-#| msgid "Custom Prompts"
 msgid "Edit Custom Prompt"
-msgstr "Editar Prompt Personalizado"
+msgstr "Editar prompt personalizado"
 
 #. Translators: Confirmation text before deleting a custom prompt.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:514
 #, python-brace-format
 msgid "Remove custom prompt '{name}'?"
-msgstr "Remover prompt personalizado '{name}'?"
+msgstr "Remover o prompt personalizado '{name}'?"
 
 #. Translators: Title of confirmation dialog.
 #: addon\globalPlugins\visionAssistant\prompt_manager_dialog.py:516
 msgid "Confirm Remove"
-msgstr "Confirmar e Remover"
+msgstr "Confirmar remoção"
 
 #. --- 1. Recommended (Auto-Updating) ---
 #. Translators: AI Model info. [Auto] = Automatic updates. (Latest) = Newest version.
@@ -535,28 +516,24 @@ msgstr "Tradução"
 #. Translators: Feature name used in guarded prompt warnings for smart translation.
 #: addon\globalPlugins\visionAssistant\__init__.py:239
 #: addon\globalPlugins\visionAssistant\__init__.py:242
-#| msgid "Translation"
 msgid "Smart Translation"
 msgstr "Tradução Inteligente"
 
 #. Translators: Label for the quick translation prompt.
 #: addon\globalPlugins\visionAssistant\__init__.py:251
-#| msgid "Translation"
 msgid "Quick Translation"
 msgstr "Tradução Rápida"
 
 #. Translators: Section header for document-related prompts in Prompt Manager.
 #: addon\globalPlugins\visionAssistant\__init__.py:257
 #: addon\globalPlugins\visionAssistant\__init__.py:384
-#| msgid "Docu&mentation"
 msgid "Document"
 msgstr "Documento"
 
 #. Translators: Label for the initial context prompt in document chat.
 #: addon\globalPlugins\visionAssistant\__init__.py:259
-#| msgid "Docu&mentation"
 msgid "Document Chat Context"
-msgstr "Contexto de Chat do Documento"
+msgstr "Contexto do bate-papo do documento"
 
 #. Translators: Section header for advanced/internal prompts in Prompt Manager.
 #: addon\globalPlugins\visionAssistant\__init__.py:265
@@ -579,15 +556,13 @@ msgstr "Visão"
 
 #. Translators: Label for the prompt used to analyze the current navigator object.
 #: addon\globalPlugins\visionAssistant\__init__.py:276
-#| msgid "Navigator Object"
 msgid "Navigator Object Analysis"
-msgstr "Análise do Objeto do Navegador"
+msgstr "Análise de objetos do navegador"
 
 #. Translators: Label for the prompt used to analyze the entire screen.
 #: addon\globalPlugins\visionAssistant\__init__.py:290
-#| msgid "Full Screen"
 msgid "Full Screen Analysis"
-msgstr "Análise de Tela Inteira"
+msgstr "Análise em tela cheia"
 
 #. Translators: Label for the follow-up context in image analysis chat.
 #: addon\globalPlugins\visionAssistant\__init__.py:304
@@ -597,7 +572,7 @@ msgstr "Contexto de Acompanhamento do Visão"
 #. Translators: Label for the rule enforced during image analysis follow-up questions.
 #: addon\globalPlugins\visionAssistant\__init__.py:313
 msgid "Vision Follow-up Answer Rule"
-msgstr "Regra de Resposta de Acompanhamento do Visão"
+msgstr "Regra de Resposta para Acompanhamento do Visão"
 
 #. Translators: Section header for video analysis prompts in Prompt Manager.
 #: addon\globalPlugins\visionAssistant\__init__.py:320
@@ -612,15 +587,13 @@ msgstr "Análise de vídeo"
 #. Translators: Section header for audio-related prompts in Prompt Manager.
 #: addon\globalPlugins\visionAssistant\__init__.py:332
 #: addon\globalPlugins\visionAssistant\__init__.py:340
-#| msgid "Save Audio"
 msgid "Audio"
 msgstr "Áudio"
 
 #. Translators: Label for the audio file transcription prompt.
 #: addon\globalPlugins\visionAssistant\__init__.py:334
-#| msgid "Translation"
 msgid "Audio Transcription"
-msgstr "Transcrição de Áudio"
+msgstr "Transcrição de áudio"
 
 #. Translators: Label for the smart voice dictation prompt.
 #. Translators: Feature name used in guarded prompt warnings for smart dictation.
@@ -638,21 +611,19 @@ msgstr "OCR"
 #. Translators: Label for the OCR prompt used for image text extraction.
 #: addon\globalPlugins\visionAssistant\__init__.py:357
 msgid "OCR Image Extraction"
-msgstr "Extração de Imagem com OCR"
+msgstr "Extração de imagem OCR"
 
 #. Translators: Label for the OCR prompt used for document text extraction.
 #. Translators: Feature name used in guarded prompt warnings for OCR document extraction.
 #: addon\globalPlugins\visionAssistant\__init__.py:369
 #: addon\globalPlugins\visionAssistant\__init__.py:372
-#| msgid "Docu&mentation"
 msgid "OCR Document Extraction"
-msgstr "Extração de Documento com OCR"
+msgstr "Extração de documentos OCR"
 
 #. Translators: Label for the combined OCR and translation prompt for documents.
 #: addon\globalPlugins\visionAssistant\__init__.py:386
-#| msgid "Document Reader"
 msgid "Document OCR + Translate"
-msgstr "OCR de Documento + Traduzir"
+msgstr "OCR de documentos mais tradução"
 
 #. Translators: Section header for CAPTCHA-related prompts in Prompt Manager.
 #. --- CAPTCHA Group ---
@@ -666,14 +637,13 @@ msgstr "CAPTCHA"
 #. Translators: Feature name used in guarded prompt warnings for CAPTCHA solver.
 #: addon\globalPlugins\visionAssistant\__init__.py:398
 #: addon\globalPlugins\visionAssistant\__init__.py:401
-#| msgid "CAPTCHA"
 msgid "CAPTCHA Solver"
 msgstr "Resolvedor de CAPTCHA"
 
 #. Translators: Label for the fallback prompt when only files are provided in Refine.
 #: addon\globalPlugins\visionAssistant\__init__.py:413
 msgid "Refine Files-Only Fallback"
-msgstr "Refinar fallback apenas para arquivos"
+msgstr "Refinar Fallback Apenas para Arquivos"
 
 #. Translators: Description and input type for the [selection] variable in the Variables Guide.
 #: addon\globalPlugins\visionAssistant\__init__.py:421
@@ -687,15 +657,13 @@ msgstr "Texto"
 
 #. Translators: Description for the [clipboard] variable in the Variables Guide.
 #: addon\globalPlugins\visionAssistant\__init__.py:423
-#| msgid "Clipboard empty."
 msgid "Clipboard content"
 msgstr "Conteúdo da área de transferência"
 
 #. Translators: Description and input type for the [screen_obj] variable in the Variables Guide.
 #: addon\globalPlugins\visionAssistant\__init__.py:425
-#| msgid "Translates the selected text or navigator object."
 msgid "Screenshot of the navigator object"
-msgstr "Captura de tela do objeto do navegador"
+msgstr "Captura de tela do objeto navegador"
 
 #: addon\globalPlugins\visionAssistant\__init__.py:425
 #: addon\globalPlugins\visionAssistant\__init__.py:427
@@ -709,7 +677,6 @@ msgstr "Captura de tela da tela inteira"
 
 #. Translators: Description and input type for the [file_ocr] variable in the Variables Guide.
 #: addon\globalPlugins\visionAssistant\__init__.py:429
-#| msgid "Select Image/PDF/TIFF for OCR"
 msgid "Select image/PDF/TIFF for text extraction"
 msgstr "Selecionar imagem/PDF/TIFF para extração de texto"
 
@@ -719,9 +686,8 @@ msgstr "Imagem, PDF, TIFF"
 
 #. Translators: Description and input type for the [file_read] variable in the Variables Guide.
 #: addon\globalPlugins\visionAssistant\__init__.py:431
-#| msgid "Select Document to Analyze"
 msgid "Select document for reading"
-msgstr "Selecionar documento para leitura"
+msgstr "Selecione o documento para leitura"
 
 #: addon\globalPlugins\visionAssistant\__init__.py:431
 msgid "TXT, Code, PDF"
@@ -729,9 +695,8 @@ msgstr "TXT, Code, PDF"
 
 #. Translators: Description and input type for the [file_audio] variable in the Variables Guide.
 #: addon\globalPlugins\visionAssistant\__init__.py:433
-#| msgid "Select Audio File to Transcribe"
 msgid "Select audio file for analysis"
-msgstr "Selecionar arquivo de áudio para análise"
+msgstr "Selecione o arquivo de áudio para análise"
 
 #: addon\globalPlugins\visionAssistant\__init__.py:433
 msgid "MP3, WAV, OGG"
@@ -1059,14 +1024,13 @@ msgstr "Tela Inteira"
 #. --- Prompt Manager Group ---
 #. Translators: Title of the settings group for prompt management
 #: addon\globalPlugins\visionAssistant\__init__.py:1761
-#| msgid "Custom Prompts"
 msgid "Prompts"
 msgstr "Prompts"
 
 #. Translators: Description for the prompt manager button.
 #: addon\globalPlugins\visionAssistant\__init__.py:1766
 msgid "Manage default and custom prompts."
-msgstr "Gerenciar prompts padrão e personalizados."
+msgstr "Gerencie prompts padrão e personalizados."
 
 #. Translators: Button label to open prompt manager dialog.
 #: addon\globalPlugins\visionAssistant\__init__.py:1768
@@ -1580,7 +1544,6 @@ msgstr "Erro no Upload do Arquivo: {error}"
 #. Translators: Error message when there's no content to send
 #: addon\globalPlugins\visionAssistant\__init__.py:2716
 #: addon\globalPlugins\visionAssistant\__init__.py:2723
-#| msgid "No text to read."
 msgid "Nothing to send."
 msgstr "Nada para enviar."
 
@@ -1646,7 +1609,6 @@ msgstr "Traduzido: {text}"
 
 #: addon\globalPlugins\visionAssistant\__init__.py:2961
 #, python-brace-format
-#| msgid "Translation"
 msgid "{name} - Translation"
 msgstr "{name} - Tradução"
 
@@ -1682,7 +1644,7 @@ msgstr "{name} - Resultado Refinado"
 #. Translators: Message reported when calling the OCR file recognition command
 #: addon\globalPlugins\visionAssistant\__init__.py:3296
 msgid "Uploading & Extracting..."
-msgstr "Enviando e extraindo..."
+msgstr "Enviando & Extraindo..."
 
 #. Translators: Error shown when OCR finds no text in the selected files
 #: addon\globalPlugins\visionAssistant\__init__.py:3325
@@ -1925,12 +1887,67 @@ msgstr ""
 "direta."
 
 #~ msgid ""
+#~ "## Changes for 4.5\n"
+#~ "**Advanced Prompt Manager:** Introduced a dedicated management dialog in "
+#~ "settings to customize default system prompts and manage user-defined "
+#~ "prompts with full support for adding, editing, reordering, and "
+#~ "previewing.\n"
+#~ "**Comprehensive Proxy Support:** Resolved network connectivity issues by "
+#~ "ensuring that user-configured proxy settings are strictly applied to all "
+#~ "API requests, including translation, OCR, and speech generation.\n"
+#~ "**Automated Data Migration:** Integrated a smart migration system to "
+#~ "automatically upgrade legacy prompt configurations to a robust v2 JSON "
+#~ "format upon the first run without data loss.\n"
+#~ "**Updated Compatibility (2025.1):** Set the minimum required NVDA version "
+#~ "to 2025.1 due to library dependencies in advanced features like the "
+#~ "Document Reader to ensure stable performance.\n"
+#~ "**Optimized Settings Interface:** Streamlined the settings interface by "
+#~ "reorganizing prompt management into a separate dialog, providing a "
+#~ "cleaner and more accessible user experience.\n"
+#~ "**Prompt Variables Guide:** Added a built-in guide within the prompt "
+#~ "dialogs to help users easily identify and use dynamic variables such as "
+#~ "[selection], [clipboard], and [screen_obj]."
+#~ msgstr ""
+#~ "## Alterações para 4.5\n"
+#~ "**Gerenciador Avançado de Prompts:** Introduzido um diálogo dedicado de "
+#~ "gerenciamento nas configurações para personalizar os prompts padrão do "
+#~ "sistema e gerenciar prompts definidos pelo usuário, com suporte completo "
+#~ "para adicionar, editar, reordenar e visualizar.\n"
+#~ "**Suporte Abrangente a Proxy:** Resolvidos problemas de conectividade de "
+#~ "rede garantindo que as configurações de proxy definidas pelo usuário "
+#~ "sejam aplicadas rigorosamente a todas as requisições de API, incluindo "
+#~ "tradução, OCR e geração de fala.\n"
+#~ "**Migração Automatizada de Dados:** Integrado um sistema inteligente de "
+#~ "migração para atualizar automaticamente configurações legadas de prompts "
+#~ "para um formato JSON v2 mais robusto na primeira execução, sem perda de "
+#~ "dados.\n"
+#~ "**Compatibilidade Atualizada (2025.1):** Definida a versão mínima "
+#~ "requerida do NVDA para 2025.1 devido a dependências de bibliotecas em "
+#~ "recursos avançados como o Leitor de Documentos, garantindo desempenho "
+#~ "estável.\n"
+#~ "**Interface de Configurações Otimizada:** Interface de configurações "
+#~ "aprimorada com a reorganização do gerenciamento de prompts em um diálogo "
+#~ "separado, proporcionando uma experiência mais limpa e acessível.\n"
+#~ "**Guia de Variáveis de Prompt:** Adicionado um guia integrado nos "
+#~ "diálogos de prompt para ajudar os usuários a identificar e utilizar "
+#~ "facilmente variáveis dinâmicas como [selection], [clipboard] e "
+#~ "[screen_obj]."
+
+#~ msgid ""
 #~ "Address copied to clipboard! If you'd like, you can now proceed to your "
 #~ "wallet and donate any amount you can. Your support is greatly appreciated!"
 #~ msgstr ""
 #~ "Endereço copiado para a área de transferência! Se desejar, você pode "
 #~ "agora acessar sua carteira e doar qualquer quantia que puder. Agradecemos "
 #~ "imensamente o seu apoio!"
+
+#~ msgid ""
+#~ "Custom prompt text supports multiple lines and '|' in v2. Legacy versions "
+#~ "may not import these prompts."
+#~ msgstr ""
+#~ "O texto personalizado do prompt suporta múltiplas linhas e o caractere "
+#~ "'barra vertical' na versão v2. Versões legadas podem não importar esses "
+#~ "prompts."
 
 #~ msgid "Format: Name:Content"
 #~ msgstr "Formato: Nome:Conteúdo"
