@@ -38,11 +38,12 @@ Klavye kısayol çakışmalarını önlemek için bu eklenti bir **Komut Katman�
 | **Shift + V** | Çevrimiçi Video Analizi | **YouTube** veya **Instagram** videolarını Bağlantı üzerinden analiz eder.                       |
 | **D**         | Belge Analizi           | PDF/TXT/MD/PY dosyaları hakkında sohbet eder.                                                     |
 | **F**         | Dosya OCR               | Görüntü/PDF/TIFF dosyalarından doğrudan OCR yapar (Çok sayfalı TIFF desteklenir).           |
-| **A**         | Ses Transkripsiyonu     | MP3/WAV/OGG dosyalarını yazıya döker.                                                       |
+| **A**         | Sesi metne çevirme     | MP3/WAV/OGG dosyalarını yazıya döker.                                                       |
 | **C**         | CAPTCHA Çözücü          | CAPTCHA’yı otomatik olarak yakalar ve çözer.                                                |
 | **S**         | Akıllı Dikte            | Konuşmayı metne dönüştürür. Kaydı başlatmak için basın, durdurmak/yazmak için tekrar basın. |
 | **L**         | Durumu Seslendir         | Mevcut durumu seslendirir (örn. "Yükleniyor...", "Boşta").                                      |
 | **U**         | Güncelleme Kontrolü     | GitHub üzerinden en son sürümü denetler.                                                |
+| **Boşluk**     | Son Sonucu Geri Çağır       | İnceleme veya takip için bir sohbet iletişim kutusundaki son YZ yanıtını gösterir.        |
 | **H** | Komut Yardımı | Kullanılabilir tüm kısayol tuşlarının kapsamlı bir listesini ve bunların komut katmanındaki açıklamalarını görüntüler. |
 
 ### 2.1 Belge Okuyucu Kısayolları (İç Görüntüleyici)
@@ -83,6 +84,18 @@ Sistemi ve özel istemleri yapılandırmak için **Ayarlar > İstemler > İsteml
 
 ***
 **Not:** Tüm yapay zekâ özellikleri için aktif bir internet bağlantısı gereklidir. Çok sayfalı TIFF dosyaları otomatik olarak işlenir.
+
+## 4. Destek ve Topluluk
+
+En son haberler, özellikler ve sürümlerle güncel kalın:
+- **Telegram Kanalı:** [t.me/VisionAssistantPro](https://t.me/VisionAssistantPro)
+- **GitHub Sorun Bildirme:** Hata raporları ve özellik istekleri için.
+
+## 4.6 için değişiklikler
+* **Etkileşimli Sonuç Geri Çağırma:** Komut katmanına **Boşluk** tuşu eklendi; bu sayede, "Doğrudan Çıktı" modu etkin olsa bile, kullanıcıların takip soruları için bir sohbet penceresindeki son YZ yanıtını anında yeniden açmasına olanak tanındı.
+* **Telegram Topluluk Merkezi:** NVDA Araçlar menüsüne, en son haberler, özellikler ve sürümlerle güncel kalmanın hızlı bir yolunu sağlayan bir "Resmi Telegram Kanalı" bağlantısı eklendi.
+* **Gelişmiş Yanıt Kararlılığı:** Doğrudan konuşma çıkışını kullanırken daha güvenilir performans ve daha sorunsuz bir deneyim sağlamak için Çeviri, OCR ve Görüntü özellikleri için temel mantık optimize edildi.
+* **Geliştirilmiş Arayüz Kılavuzu:** Yeni geri çağırma sistemini ve doğrudan çıkış ayarlarıyla birlikte nasıl çalıştığını daha iyi açıklamak için ayar açıklamaları ve belgeleri güncellendi.
 
 ## 4.5 için değişiklikler
 *   **Gelişmiş İstem Yöneticisi:** Varsayılan sistem istemlerini özelleştirmek ve ekleme, düzenleme, yeniden sıralama ve önizleme için tam destekle kullanıcı tanımlı istemleri yönetmek için ayarlara özel bir yönetim iletişim kutusu sunuldu.
