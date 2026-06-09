@@ -156,53 +156,6 @@ GEMINI_VOICES = [
     ("Sulafat", _("Warm"))
 ]
 
-# MiniMax TTS system voices - PT-BR voices are listed first for Portuguese
-# users, followed by EN, ES, FR. Full list of 300+ available via API.
-MINIMAX_VOICES = [
-    # --- Portuguese (BR/PT) voices ---
-    # Translators: Adjective describing a sentimental female AI voice style.
-    ("Portuguese_SentimentalLady", _("Sentimental Lady")),
-    # Translators: Adjective describing a confident female AI voice style.
-    ("Portuguese_ConfidentWoman", _("Confident Woman")),
-    # Translators: Adjective describing a deep-voiced male AI voice style.
-    ("Portuguese_Deep-VoicedGentleman", _("Deep-voiced Gentleman")),
-    # Translators: Adjective describing a calm female leader AI voice style.
-    ("Portuguese_CalmLeader", _("Calm Leader")),
-    # Translators: Adjective describing a narrator AI voice style.
-    ("Portuguese_Narrator", _("Narrator")),
-    # Translators: Adjective describing a lovely female AI voice style.
-    ("Portuguese_LovelyLady", _("Lovely Lady")),
-    # Translators: Adjective describing a serene female AI voice style.
-    ("Portuguese_SereneWoman", _("Serene Woman")),
-    # Translators: Adjective describing a wise female AI voice style.
-    ("Portuguese_Wiselady", _("Wise Lady")),
-    # Translators: Adjective describing a gentle female teacher AI voice style.
-    ("Portuguese_GentleTeacher", _("Gentle Teacher")),
-    # Translators: Adjective describing an inspiring female AI voice style.
-    ("Portuguese_InspiringLady", _("Inspiring Lady")),
-    # --- English voices (high quality, useful for English content) ---
-    # Translators: Adjective describing a calm female AI voice style.
-    ("English_CalmWoman", _("Calm Woman")),
-    # Translators: Adjective describing a friendly male AI voice style.
-    ("English_FriendlyPerson", _("Friendly Guy")),
-    # Translators: Adjective describing a deep male AI voice style.
-    ("English_ManWithDeepVoice", _("Man With Deep Voice")),
-    # Translators: Adjective describing an expressive narrator AI voice style.
-    ("English_expressive_narrator", _("Expressive Narrator")),
-    # --- Spanish voices ---
-    # Translators: Adjective describing a serene female AI voice style.
-    ("Spanish_SereneWoman", _("Serene Woman")),
-    # Translators: Adjective describing a wise scholar male AI voice style.
-    ("Spanish_WiseScholar", _("Wise Scholar")),
-    # Translators: Adjective describing a deep-toned male AI voice style.
-    ("Spanish_Deep-tonedMan", _("Deep-toned Man")),
-    # --- French voices ---
-    # Translators: Adjective describing a movie lead female AI voice style.
-    ("French_MovieLeadFemale", _("Movie Lead Female")),
-    # Translators: Adjective describing a male narrator AI voice style.
-    ("French_MaleNarrator", _("Male Narrator")),
-]
-
 OPENAI_VOICES = [
     # Translators: Adjective describing a neutral AI voice style.
     ("Alloy", _("Neutral")),
@@ -1812,14 +1765,81 @@ class AIHandler:
     @staticmethod
     def is_tts_supported(provider=None):
         p = provider if provider else config.conf["VisionAssistant"]["active_provider"]
-        
+
         if p in ["gemini", "openai", "minimax"]:
             return True
-        
+
         if p == "custom":
             return True
-            
+
         return False
+
+    @staticmethod
+    def get_voices(provider):
+        # Returns a list of (voice_id, display_name) tuples for the given provider.
+        # For minimax, fetches dynamically from the API (cached 24h in config).
+        # For gemini/openai, returns the hardcoded constant.
+        # Returns empty list on error.
+        if provider == "minimax":
+            try:
+                import time
+                cache = config.conf["VisionAssistant"].get("minimax_voices_cache", "")
+                cache_time = config.conf["VisionAssistant"].get("minimax_voices_cache_time", 0)
+                # Cache valid for 24 hours (86400 seconds)
+                if cache and (time.time() - cache_time < 86400):
+                    # Parse cache: "voice_id|display_name,voice_id|display_name,..."
+                    voices = []
+                    for entry in cache.split(""):
+                        if "" in entry:
+                            vid, vname = entry.split("", 1)
+                            voices.append((vid, vname))
+                    if voices:
+                        log.debug(f"Using cached MiniMax voices ({len(voices)} entries)")
+                        return voices
+
+                # Cache miss or expired - fetch from API
+                base = AIHandler.get_base_url("minimax")
+                url = f"{base.rstrip('/')}/get_voice"
+                keys = AIHandler.get_keys("minimax")
+                if not keys:
+                    return []
+                key = keys[0]
+                payload = json.dumps({"voice_type": "system"}).encode("utf-8")
+                req = request.Request(url, data=payload, headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json"
+                })
+                with get_proxy_opener().open(req, timeout=30) as r:
+                    resp = json.loads(r.read().decode("utf-8"))
+                    system_voices = resp.get("system_voice", [])
+                    if not system_voices:
+                        log.warning("MiniMax /get_voice returned no system_voice list")
+                        return []
+                    voices = []
+                    storage_parts = []
+                    for v in system_voices:
+                        vid = v.get("voice_id", "")
+                        vname = v.get("voice_name", vid)
+                        if vid:
+                            voices.append((vid, vname))
+                            storage_parts.append(f"{vid}{vname}")
+                    if voices:
+                        # Save to cache (24h)
+                        config.conf["VisionAssistant"]["minimax_voices_cache"] = "".join(storage_parts)
+                        config.conf["VisionAssistant"]["minimax_voices_cache_time"] = int(time.time())
+                        log.debug(f"Fetched and cached {len(voices)} MiniMax voices")
+                        return voices
+                    return []
+            except Exception as e:
+                log.warning(f"Failed to fetch MiniMax voices: {e}")
+                return []
+        if provider == "gemini":
+            return GEMINI_VOICES
+        if provider == "openai":
+            return OPENAI_VOICES
+        if provider == "custom":
+            return OPENAI_VOICES
+        return []
 
     @staticmethod
     def filter_models(provider, models_info, task="main"):
@@ -2883,16 +2903,66 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
 
     def updateVoiceList(self, p_name):
         self.voice_sel.Clear()
-        if p_name in ["openai", "custom"]:
+        if p_name == "openai" or p_name == "custom":
             voices = OPENAI_VOICES
-        elif p_name == "minimax":
-            voices = MINIMAX_VOICES
         else:
-            voices = GEMINI_VOICES
-        
+            voices = AIHandler.get_voices(p_name) or GEMINI_VOICES
+        # Render the list immediately (either Gemini/OpenAI hardcoded, or MiniMax cache hit)
         for v in voices:
             self.voice_sel.Append(f"{v[0]} - {v[1]}", v[0])
-            
+        # If this is MiniMax, trigger async refresh in the background to fetch the
+        # latest official voice list from /v1/get_voice (the cache may be stale or empty)
+        if p_name == "minimax":
+            threading.Thread(target=self._refresh_minimax_voices, daemon=True).start()
+        else:
+            curr_voice = config.conf["VisionAssistant"].get("tts_voice", "Puck")
+            self._select_voice_in_list(curr_voice)
+
+    def _refresh_minimax_voices(self):
+        # Background thread: fetch fresh MiniMax voice list, then update UI
+        try:
+            # Force a refresh by clearing cache and re-fetching
+            config.conf["VisionAssistant"]["minimax_voices_cache"] = ""
+            config.conf["VisionAssistant"]["minimax_voices_cache_time"] = 0
+            voices = AIHandler.get_voices("minimax")
+            if voices and hasattr(self, 'voice_sel'):
+                # wx widget updates must happen on the main thread
+                wx.CallAfter(self._populate_voice_sel, voices)
+        except Exception as e:
+            log.warning(f"Background MiniMax voice refresh failed: {e}")
+
+    def _populate_voice_sel(self, voices):
+        try:
+            self.voice_sel.Clear()
+            for v in voices:
+                self.voice_sel.Append(f"{v[0]} - {v[1]}", v[0])
+            curr_voice = config.conf["VisionAssistant"].get("tts_voice", "Portuguese_Narrator")
+            self._select_voice_in_list(curr_voice)
+        except Exception as e:
+            log.warning(f"Failed to populate voice_sel: {e}")
+
+    def _select_voice_in_list(self, voice_id):
+        try:
+            for i in range(self.voice_sel.GetCount()):
+                if self.voice_sel.GetClientData(i) == voice_id:
+                    self.voice_sel.SetSelection(i)
+                    return
+            if self.voice_sel.GetCount() > 0:
+                self.voice_sel.SetSelection(0)
+        except Exception:
+            pass
+
+    def _updateVoiceList_legacy(self, p_name):
+        # Original implementation kept for reference (no longer called)
+        self.voice_sel.Clear()
+        if p_name == "openai" or p_name == "custom":
+            voices = OPENAI_VOICES
+        else:
+            voices = GEMINI_VOICES
+
+        for v in voices:
+            self.voice_sel.Append(f"{v[0]} - {v[1]}", v[0])
+
         curr_voice = config.conf["VisionAssistant"].get("tts_voice", "Puck")
         idx = wx.NOT_FOUND
         for i in range(self.voice_sel.GetCount()):
