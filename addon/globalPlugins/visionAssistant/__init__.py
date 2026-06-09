@@ -257,7 +257,7 @@ confspec = {
     "minimax_ocr_model": "string(default='MiniMax-M3')",
     "minimax_stt_model": "string(default='asr-01')",
     "minimax_tts_model": "string(default='speech-2.8-hd')",
-    "minimax_tts_voice": "string(default='Calm_Woman')",
+    "minimax_tts_voice": "string(default='Portuguese_Narrator')",
     "custom_api_key": "string(default='')",
     "custom_api_url": "string(default='')",
     "custom_api_type": "string(default='openai')",
@@ -960,6 +960,22 @@ def clean_markdown(text):
     text = re.sub(r'```', '', text)
     text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
     text = re.sub(r'^\s*-\s+', '', text, flags=re.MULTILINE)
+    return text.strip()
+
+def strip_thinking_tags(text):
+    # Remove reasoning/thinking blocks emitted by reasoning-capable models
+    # (e.g. MiniMax-M3, DeepSeek-R1, o1) before sending to TTS or display.
+    # Supported tag forms:
+    #   <think>...</think>
+    #   <reasoning>...</reasoning>
+    #   <thought>...</thought>
+    if not text: return ""
+    # Strip tagged blocks (multiline, non-greedy)
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<thought>.*?</thought>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Collapse leftover blank lines created by removed blocks
+    text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
 def markdown_to_html(text, full_page=False):
@@ -2124,7 +2140,13 @@ class AIHandler:
                     res = json.loads(r.read().decode('utf-8'))
                     if isinstance(res, dict):
                         if "choices" in res and res["choices"]:
-                            return res["choices"][0]["message"]["content"]
+                            content = res["choices"][0]["message"]["content"]
+                            # MiniMax reasoning models emit visible thinking blocks
+                            # (e.g. "<think>...</think>") in the response content.
+                            # Strip them so the user sees only the final answer.
+                            if p == "minimax" and content:
+                                content = strip_thinking_tags(content)
+                            return content
                         elif "error" in res:
                             err_val = res["error"]
                             err_msg = err_val.get("message") if isinstance(err_val, dict) else str(err_val)
@@ -2222,7 +2244,7 @@ class AIHandler:
             # NOT the chat model (minimax_model_name = MiniMax-M3).
             # Sending MiniMax-M3 to /t2a_v2 returns empty audio (model mismatch).
             model = config.conf["VisionAssistant"].get("minimax_tts_model", "speech-2.8-hd").strip() or "speech-2.8-hd"
-            minimax_voice = voice_name if voice_name else config.conf["VisionAssistant"]["minimax_tts_voice"].strip() or "Calm_Woman"
+            minimax_voice = voice_name if voice_name else config.conf["VisionAssistant"]["minimax_tts_voice"].strip() or "Portuguese_Narrator"
             minimax_payload = {
                 "model": model,
                 "text": text,
