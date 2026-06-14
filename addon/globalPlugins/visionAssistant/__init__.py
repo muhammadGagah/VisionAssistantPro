@@ -20,6 +20,9 @@ from functools import wraps
 import uuid
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
+import ssl
+import socket
+import struct
 
 lib_dir = os.path.join(os.path.dirname(__file__), "lib")
 if lib_dir not in sys.path:
@@ -155,7 +158,6 @@ GEMINI_VOICES = [
     # Translators: Adjective describing a warm AI voice style.
     ("Sulafat", _("Warm"))
 ]
-
 OPENAI_VOICES = [
     # Translators: Adjective describing a neutral AI voice style.
     ("Alloy", _("Neutral")),
@@ -257,7 +259,9 @@ confspec = {
     "minimax_ocr_model": "string(default='MiniMax-M3')",
     "minimax_stt_model": "string(default='asr-01')",
     "minimax_tts_model": "string(default='speech-2.8-hd')",
-    "minimax_tts_voice": "string(default='Portuguese_Narrator')",
+    "minimax_tts_voice": "string(default='English_expressive_narrator')",
+    "minimax_voices_cache": "string(default='')",
+"minimax_voices_cache_time": "integer(default=0)",
     "custom_api_key": "string(default='')",
     "custom_api_url": "string(default='')",
     "custom_api_type": "string(default='openai')",
@@ -274,11 +278,13 @@ confspec = {
     "custom_tts_voice": "string(default='')",
     "custom_operator_url": "string(default='')",
     "custom_operator_model": "string(default='')",
+    "custom_live_model": "string(default='')",
     "advanced_model_routing": "boolean(default=False)",
     "gemini_ocr_model": "string(default='')",
     "gemini_stt_model": "string(default='')",
     "gemini_tts_model": "string(default='')",
     "gemini_operator_model": "string(default='')",
+    "gemini_live_model": "string(default='')",
     "openai_ocr_model": "string(default='')",
     "openai_stt_model": "string(default='')",
     "openai_tts_model": "string(default='')",
@@ -314,14 +320,15 @@ confspec = {
     "clean_markdown_chat": "boolean(default=True)",
     "copy_to_clipboard": "boolean(default=False)",
     "skip_chat_dialog": "boolean(default=False)",
+    "live_direct_output": "boolean(default=False)",
+    "live_model": "string(default='gemini-3.1-flash-live-preview')",
+    "live_thinking_level": "string(default='medium')",
     "ocr_engine": "string(default='chrome')",
     "ocr_batch_size": "integer(default=20, min=0, max=100)",
     "tts_voice": "string(default='Puck')"
 }
 
 config.conf.spec["VisionAssistant"] = confspec
-
-PROMPT_UI_LOCATOR = "Analyze UI (Size: {width}x{height}). Request: '{query}'. Output JSON: {{\"x\": int, \"y\": int, \"found\": bool}}."
 
 REFINE_PROMPT_KEYS = ("summarize", "fix_grammar", "fix_translate", "explain")
 
@@ -586,6 +593,7 @@ DEFAULT_SYSTEM_PROMPTS = (
             "2. FINAL STEP: If your action (e.g., clicking a specific button or menu) directly fulfills the user's request, you MUST set \"finished\": true immediately. Do not wait for a confirmation screenshot.\n"
             "3. SUB-MENUS: Only set \"finished\": false if you are opening an intermediate menu to reach a final target in the next step.\n"
             "4. ACTION: If action needed, output ONLY JSON: {{\"x\": int, \"y\": int, \"action\": \"click\"/\"right_click\"/\"double_click\"/\"type\", \"text\": \"...\", \"finished\": bool, \"explanation\": \"... (in {response_lang})\"}}.\n"
+            "- To press Enter after typing, append '\\n' to the end of the \"text\" parameter, or mention \"enter\" in your \"explanation\" parameter.\n"
             "Coordinates scale: 0-1000. Ignore 'AI Operator' or 'NVDA' windows."
         ),
     },
@@ -624,6 +632,30 @@ DEFAULT_SYSTEM_PROMPTS = (
             "3. Ensure every object in the JSON array is separated by a comma. Verify the syntax before responding.\n"
             "JSON Template: [{\"label\": \"Name\", \"x\": 123, \"y\": 456}, ...]\n"
             "Coordinates scale: 0-1000."
+        ),
+    },
+    {
+        "key": "live_assistant_system",
+        # Translators: Section header for the Live Assistant prompt in Prompt Manager.
+        "section": _("Live"),
+        # Translators: Label for the Live Assistant system instruction prompt in the Prompt Manager.
+        "label": _("Live Assistant Instruction"),
+        "guarded": True,
+        # Translators: Feature name shown in the warning dialog when a user tries to edit the Live Assistant prompt.
+        "guardedFeatureLabel": _("Live Assistant"),
+        "requiredMarkers": ["{response_lang}"],
+        "prompt": (
+            "You are a helpful voice assistant for a blind user. You can see the user's screen "
+            "through the video frames being streamed to you. Use them to understand what the "
+            "user is doing and what they are asking about.\n\n"
+            "CRITICAL RULES TO AVOID HALLUCINATION:\n"
+            "1. NO GUESSING: Only describe what is actually, clearly, and unmistakably visible in the current frames. "
+            "Do NOT assume or hallucinate apps, websites, or layout elements (such as claiming you see Facebook or any other page when you do not).\n"
+            "2. TEXT PRECISION: Pay extreme attention to reading text, labels, and UI elements with absolute accuracy. "
+            "Read only the exact words you can see. If the text is blurred or illegible, state that it is not clear enough to read instead of guessing.\n"
+            "3. HONESTY: If you do not see something clearly, or if you do not see the specific element the user asks about, "
+            "explicitly state that you cannot see it or that you do not have enough visual information.\n"
+            "4. You MUST always speak and respond STRICTLY in {response_lang} language, regardless of the language the user speaks in."
         ),
     },
 )
@@ -963,18 +995,10 @@ def clean_markdown(text):
     return text.strip()
 
 def strip_thinking_tags(text):
-    # Remove reasoning/thinking blocks emitted by reasoning-capable models
-    # (e.g. MiniMax-M3, DeepSeek-R1, o1) before sending to TTS or display.
-    # Supported tag forms:
-    #   <think>...</think>
-    #   <reasoning>...</reasoning>
-    #   <thought>...</thought>
     if not text: return ""
-    # Strip tagged blocks (multiline, non-greedy)
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<thought>.*?</thought>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    # Collapse leftover blank lines created by removed blocks
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
@@ -1066,7 +1090,18 @@ def get_proxy_opener(target_url=None):
         if hostname.lower() in ["localhost", "127.0.0.1"]:
             is_local = True
 
-    if is_local:
+    is_reverse_proxy = False
+    if proxy_url:
+        try:
+            clean_proxy = proxy_url if "://" in proxy_url else "http://" + proxy_url
+            parsed_proxy = urlparse(clean_proxy)
+            p_host = parsed_proxy.hostname or ""
+            if p_host and "." in p_host and not p_host.replace(".", "").isdigit() and p_host.lower() not in ["localhost", "127.0.0.1"]:
+                is_reverse_proxy = True
+        except Exception:
+            pass
+
+    if is_local or is_reverse_proxy:
         opener = request.build_opener(request.ProxyHandler({}))
     else:
         opener = request.build_opener()
@@ -1476,7 +1511,7 @@ class GeminiHandler:
         headers = {"Content-Type": "application/json"}
         req = request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
         
-        with GeminiHandler._get_opener(url).open(req, timeout=120) as r:
+        with GeminiHandler._get_opener().open(req, timeout=120) as r:
             res = json.loads(r.read().decode())
             candidates = res.get('candidates')
             if not candidates:
@@ -1562,7 +1597,7 @@ class GeminiHandler:
             _apply_gemma_thinking_patch(payload, url)
             
             req = request.Request(full_url, data=json.dumps(payload).encode('utf-8'), headers={"Content-Type": "application/json"})
-            with GeminiHandler._get_opener(full_url).open(req, timeout=120) as r:
+            with GeminiHandler._get_opener().open(req, timeout=120) as r:
                 res = json.loads(r.read().decode())
                 parts = res['candidates'][0]['content'].get('parts', [])
                 return _extract_text_from_parts(parts)
@@ -1600,8 +1635,8 @@ class GeminiHandler:
             except Exception as e:
                 return ["ERROR:" + str(e)]
 
+        opener = GeminiHandler._get_opener()
         upload_url_base = AIHandler.get_endpoint("upload")
-        opener = GeminiHandler._get_opener(upload_url_base)
         
         for i, key in enumerate(keys):
             try:
@@ -1691,7 +1726,7 @@ class GeminiHandler:
             _apply_gemma_thinking_patch(payload, url)
             
             req = request.Request(full_url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
-            with GeminiHandler._get_opener(full_url).open(req, timeout=120) as r:
+            with GeminiHandler._get_opener().open(req, timeout=120) as r:
                 res = json.loads(r.read().decode())
                 parts = res['candidates'][0]['content'].get('parts', [])
                 return _extract_text_from_parts(parts)
@@ -1708,8 +1743,8 @@ class GeminiHandler:
             
         keys = GeminiHandler._get_api_keys()
         if not keys: return None
+        opener = GeminiHandler._get_opener()
         upload_url_base = AIHandler.get_endpoint("upload")
-        opener = GeminiHandler._get_opener(upload_url_base)
         base_api_url = AIHandler.get_base_url(p_active).rstrip('/')
         clean_base = base_api_url.lower().split("/v1beta")[0].split("/v1")[0].rstrip('/')
         v_tag = "/v1beta"
@@ -1763,7 +1798,7 @@ class GeminiHandler:
                 }
             }
             req = request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={"Content-Type": "application/json", "x-goog-api-key": key})
-            with GeminiHandler._get_opener(url).open(req, timeout=600) as r:
+            with GeminiHandler._get_opener().open(req, timeout=600) as r:
                 res = json.loads(r.read().decode())
                 candidates = res.get('candidates', [])
                 if not candidates: raise Exception("No candidates returned")
@@ -1781,7 +1816,7 @@ class AIHandler:
     @staticmethod
     def is_tts_supported(provider=None):
         p = provider if provider else config.conf["VisionAssistant"]["active_provider"]
-
+        
         if p in ["gemini", "openai", "minimax"]:
             return True
 
@@ -1792,33 +1827,25 @@ class AIHandler:
 
     @staticmethod
     def get_voices(provider):
-        # Returns a list of (voice_id, display_name) tuples for the given provider.
-        # For minimax, fetches dynamically from the API (cached 24h in config).
-        # For gemini/openai, returns the hardcoded constant.
-        # Returns empty list on error.
         if provider == "minimax":
             try:
                 import time
                 cache = config.conf["VisionAssistant"].get("minimax_voices_cache", "")
                 cache_time_raw = config.conf["VisionAssistant"].get("minimax_voices_cache_time", 0)
-                # Defensive: cache_time may be a string from older config versions
                 try:
                     cache_time = float(cache_time_raw)
                 except (TypeError, ValueError):
                     cache_time = 0
-                # Cache valid for 24 hours (86400 seconds)
                 if cache and (time.time() - cache_time < 86400):
-                    # Parse cache: "voice_id|display_name,voice_id|display_name,..."
                     voices = []
-                    for entry in cache.split(""):
-                        if "" in entry:
-                            vid, vname = entry.split("", 1)
+                    for entry in cache.split(","):
+                        if "|" in entry:
+                            vid, vname = entry.split("|", 1)
                             voices.append((vid, vname))
                     if voices:
                         log.debug(f"Using cached MiniMax voices ({len(voices)} entries)")
                         return voices
 
-                # Cache miss or expired - fetch from API
                 base = AIHandler.get_base_url("minimax")
                 url = f"{base.rstrip('/')}/get_voice"
                 keys = AIHandler.get_keys("minimax")
@@ -1843,10 +1870,9 @@ class AIHandler:
                         vname = v.get("voice_name", vid)
                         if vid:
                             voices.append((vid, vname))
-                            storage_parts.append(f"{vid}{vname}")
+                            storage_parts.append(f"{vid}|{vname}")
                     if voices:
-                        # Save to cache (24h)
-                        config.conf["VisionAssistant"]["minimax_voices_cache"] = "".join(storage_parts)
+                        config.conf["VisionAssistant"]["minimax_voices_cache"] = ",".join(storage_parts)
                         config.conf["VisionAssistant"]["minimax_voices_cache_time"] = int(time.time())
                         log.debug(f"Fetched and cached {len(voices)} MiniMax voices")
                         return voices
@@ -1871,7 +1897,7 @@ class AIHandler:
             mid = mid_orig.lower()
             mname = mname_orig.lower()
             if provider == "gemini":
-                excluded = ["nano", "banana", "robotic", "vo3", "v03", "veo", "tts", "native", "audio", "image", "aqa"]
+                excluded = ["nano", "banana", "robotic", "vo3", "v03", "veo", "tts", "native", "audio", "image", "aqa", "lyria"]
                 if any(x in mid or x in mname for x in excluded):
                     continue
             elif provider == "groq":
@@ -2136,7 +2162,10 @@ class AIHandler:
                 payload = {"model": model, "messages": messages, "temperature": temp, "stream": False}
                 if json_mode: payload["response_format"] = {"type": "json_object"}
                 
-                headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+                headers = {
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
                 if key and key.strip(): headers["Authorization"] = f"Bearer {key}"
                 
                 req = request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
@@ -2145,9 +2174,6 @@ class AIHandler:
                     if isinstance(res, dict):
                         if "choices" in res and res["choices"]:
                             content = res["choices"][0]["message"]["content"]
-                            # MiniMax reasoning models emit visible thinking blocks
-                            # (e.g. "<think>...</think>") in the response content.
-                            # Strip them so the user sees only the final answer.
                             if p == "minimax" and content:
                                 content = strip_thinking_tags(content)
                             return content
@@ -2157,7 +2183,17 @@ class AIHandler:
                             return f"ERROR: {err_msg}"
                         elif "message" in res:
                             return f"ERROR: {res['message']}"
-                    return "ERROR: " + _("AI Error")
+                        elif "detail" in res:
+                            return f"ERROR: {res['detail']}"
+                        elif "msg" in res:
+                            return f"ERROR: {res['msg']}"
+                        elif "error_message" in res:
+                            return f"ERROR: {res['error_message']}"
+                        elif "choices" in res and not res["choices"]:
+                            # Translators: Error prefix shown when the AI response is blocked by safety filters.
+                            return "ERROR: " + _("Blocked by AI Safety Filters: ")
+                    # Translators: Error message shown when the AI returns an unknown error
+                    return "ERROR: " + _("AI Error") + f" (Response: {res})"
             except error.HTTPError as e:
 
                 try:
@@ -2235,7 +2271,7 @@ class AIHandler:
         m_key = "model_name" if p == "gemini" else f"{p}_model_name"
         model = model_override or config.conf["VisionAssistant"].get(m_key, "")
         
-        if p == "custom":
+        if p == "custom": 
             model = config.conf["VisionAssistant"]["custom_tts_model"].strip() or "tts-1"
         elif config.conf["VisionAssistant"].get("advanced_model_routing", False):
             adv_tts = config.conf["VisionAssistant"].get(f"{p}_tts_model", "").strip()
@@ -2244,15 +2280,10 @@ class AIHandler:
         elif p == "openai":
             model = "tts-1"
 
-        # MiniMax TTS uses a custom payload (text + voice_setting + audio_setting)
-        # and returns audio as hex inside JSON (data.audio field).
         if p == "minimax":
             minimax_tts_url = "https://api.minimax.io/v1/t2a_v2"
-            # Override model with the dedicated TTS model (default: speech-2.8-hd),
-            # NOT the chat model (minimax_model_name = MiniMax-M3).
-            # Sending MiniMax-M3 to /t2a_v2 returns empty audio (model mismatch).
             model = config.conf["VisionAssistant"].get("minimax_tts_model", "speech-2.8-hd").strip() or "speech-2.8-hd"
-            minimax_voice = voice_name if voice_name else config.conf["VisionAssistant"]["minimax_tts_voice"].strip() or "Portuguese_Narrator"
+            minimax_voice = voice_name if voice_name else config.conf["VisionAssistant"]["minimax_tts_voice"].strip() or "English_expressive_narrator"
             minimax_payload = {
                 "model": model,
                 "text": text,
@@ -2264,7 +2295,7 @@ class AIHandler:
                     headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
                     if key and key.strip(): headers["Authorization"] = f"Bearer {key}"
                     req = request.Request(minimax_tts_url, data=json.dumps(minimax_payload).encode(), headers=headers)
-                    with get_proxy_opener(minimax_tts_url).open(req, timeout=120) as r:
+                    with get_proxy_opener().open(req, timeout=600) as r:
                         resp_json = json.loads(r.read().decode("utf-8"))
                         hex_audio = resp_json.get("data", {}).get("audio", "")
                         if not hex_audio:
@@ -2281,7 +2312,7 @@ class AIHandler:
                 headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
                 if key and key.strip(): headers["Authorization"] = f"Bearer {key}"
                 req = request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-                with get_proxy_opener(url).open(req, timeout=120) as r: return base64.b64encode(r.read()).decode('utf-8'), False
+                with get_proxy_opener(url).open(req, timeout=600) as r: return base64.b64encode(r.read()).decode('utf-8'), False
             except Exception as e:
                 if key == keys[-1]: return f"ERROR: {str(e)}", False
                 continue
@@ -2297,6 +2328,682 @@ class AIHandler:
         if res and not res.startswith("ERROR:"):
             return res
         return text
+
+
+class _MinimalWebSocket:
+
+    def __init__(self, host, path, timeout=30):
+        self.host = host
+        self.path = path
+        self.timeout = timeout
+        self.sock = None
+        self._recv_buf = b""
+        self.closed = False
+        self.close_reason = None
+        self._send_lock = threading.Lock()
+
+    def connect(self):
+        raw = socket.create_connection((self.host, 443), timeout=self.timeout)
+        ctx = ssl.create_default_context()
+        self.sock = ctx.wrap_socket(raw, server_hostname=self.host)
+        key = base64.b64encode(os.urandom(16)).decode()
+        handshake = (
+            f"GET {self.path} HTTP/1.1\r\n"
+            f"Host: {self.host}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        self.sock.sendall(handshake.encode())
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("WebSocket handshake closed")
+            resp += chunk
+        if b" 101 " not in resp.split(b"\r\n", 1)[0]:
+            raise ConnectionError(f"WebSocket handshake failed: {resp[:120]!r}")
+        self._recv_buf = resp.split(b"\r\n\r\n", 1)[1]
+        
+        self.sock.settimeout(1.0)
+
+    def _send_frame(self, opcode, payload):
+        if self.closed:
+            return
+        header = bytearray()
+        header.append(0x80 | opcode)
+        mask = os.urandom(4)
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header += struct.pack(">H", length)
+        else:
+            header.append(0x80 | 127)
+            header += struct.pack(">Q", length)
+        header += mask
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        frame = bytes(header) + masked
+        with self._send_lock:
+            if self.closed:
+                return
+            self.sock.sendall(frame)
+
+    def send_text(self, text):
+        self._send_frame(0x1, text.encode("utf-8"))
+
+    def _recv_exact(self, n):
+        while len(self._recv_buf) < n:
+            if self.closed:
+                raise ConnectionError("WebSocket closed")
+            try:
+                chunk = self.sock.recv(65536)
+                if not chunk:
+                    raise ConnectionError("WebSocket connection closed")
+                self._recv_buf += chunk
+            except (BlockingIOError, ssl.SSLWantReadError, socket.timeout):
+                time.sleep(0.01)
+                continue
+            except ssl.SSLError as e:
+                if "timed out" in str(e).lower():
+                    time.sleep(0.01)
+                    continue
+                raise
+        data, self._recv_buf = self._recv_buf[:n], self._recv_buf[n:]
+        return data
+
+    def recv(self):
+        """Return (opcode, payload) for the next frame, or (None, None) on close."""
+        try:
+            b0, b1 = self._recv_exact(2)
+            opcode = b0 & 0x0F
+            length = b1 & 0x7F
+            if length == 126:
+                length = struct.unpack(">H", self._recv_exact(2))[0]
+            elif length == 127:
+                length = struct.unpack(">Q", self._recv_exact(8))[0]
+            payload = self._recv_exact(length) if length else b""
+            if opcode == 0x8:
+                if len(payload) >= 2:
+                    code = struct.unpack(">H", payload[:2])[0]
+                    text = payload[2:].decode("utf-8", "replace")
+                    self.close_reason = f"{code} {text}".strip()
+                self.closed = True
+                return None, None
+            return opcode, payload
+        except Exception as e:
+            self.close_reason = self.close_reason or f"recv error: {e}"
+            self.closed = True
+            return None, None
+
+    def close(self):
+        if self.closed:
+            return
+        try:
+            self._send_frame(0x8, b"")
+        except Exception:
+            pass
+        self.closed = True
+        try:
+            if self.sock: self.sock.close()
+        except Exception:
+            pass
+
+
+class _WAVEFORMATEX(ctypes.Structure):
+    _fields_ = [
+        ("wFormatTag", ctypes.c_ushort),
+        ("nChannels", ctypes.c_ushort),
+        ("nSamplesPerSec", ctypes.c_uint),
+        ("nAvgBytesPerSec", ctypes.c_uint),
+        ("nBlockAlign", ctypes.c_ushort),
+        ("wBitsPerSample", ctypes.c_ushort),
+        ("cbSize", ctypes.c_ushort),
+    ]
+
+
+class _WAVEHDR(ctypes.Structure):
+    pass
+
+
+_WAVEHDR._fields_ = [
+    ("lpData", ctypes.c_char_p),
+    ("dwBufferLength", ctypes.c_uint),
+    ("dwBytesRecorded", ctypes.c_uint),
+    ("dwUser", ctypes.c_void_p),
+    ("dwFlags", ctypes.c_uint),
+    ("dwLoops", ctypes.c_uint),
+    ("lpNext", ctypes.POINTER(_WAVEHDR)),
+    ("reserved", ctypes.c_void_p),
+]
+
+
+class _MicCapture:
+    _CALLBACK_NULL = 0x00000000
+    _WHDR_DONE = 0x00000001
+
+    def __init__(self, on_data, sample_rate=16000, block_ms=100):
+        self.on_data = on_data
+        self.sample_rate = sample_rate
+        self.block_size = int(sample_rate * 2 * block_ms / 1000)
+        self.hwi = None
+        self._running = False
+        self._thread = None
+        self._buffers = []
+
+    def start(self):
+        winmm = ctypes.windll.winmm
+        fmt = _WAVEFORMATEX(
+            wFormatTag=1,
+            nChannels=1,
+            nSamplesPerSec=self.sample_rate,
+            nAvgBytesPerSec=self.sample_rate * 2,
+            nBlockAlign=2,
+            wBitsPerSample=16,
+            cbSize=0,
+        )
+        self.hwi = ctypes.c_void_p()
+        res = winmm.waveInOpen(ctypes.byref(self.hwi), 0xFFFFFFFF, ctypes.byref(fmt), 0, 0, self._CALLBACK_NULL)
+        if res != 0:
+            raise OSError(f"waveInOpen failed: {res}")
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _make_header(self):
+        buf = ctypes.create_string_buffer(self.block_size)
+        hdr = _WAVEHDR()
+        hdr.lpData = ctypes.cast(buf, ctypes.c_char_p)
+        hdr.dwBufferLength = self.block_size
+        hdr.dwFlags = 0
+        return buf, hdr
+
+    def _loop(self):
+        winmm = ctypes.windll.winmm
+        hdr_size = ctypes.sizeof(_WAVEHDR)
+        headers = [self._make_header() for _ in range(4)]
+        for buf, hdr in headers:
+            winmm.waveInPrepareHeader(self.hwi, ctypes.byref(hdr), hdr_size)
+            winmm.waveInAddBuffer(self.hwi, ctypes.byref(hdr), hdr_size)
+        winmm.waveInStart(self.hwi)
+        try:
+            while self._running:
+                progressed = False
+                for buf, hdr in headers:
+                    if hdr.dwFlags & self._WHDR_DONE:
+                        recorded = hdr.dwBytesRecorded
+                        if recorded and self.on_data:
+                            try: self.on_data(buf.raw[:recorded])
+                            except Exception: pass
+                        winmm.waveInUnprepareHeader(self.hwi, ctypes.byref(hdr), hdr_size)
+                        hdr.dwFlags = 0
+                        hdr.dwBytesRecorded = 0
+                        winmm.waveInPrepareHeader(self.hwi, ctypes.byref(hdr), hdr_size)
+                        winmm.waveInAddBuffer(self.hwi, ctypes.byref(hdr), hdr_size)
+                        progressed = True
+                if not progressed:
+                    time.sleep(0.01)
+        finally:
+            try: winmm.waveInStop(self.hwi)
+            except Exception: pass
+            for buf, hdr in headers:
+                try: winmm.waveInUnprepareHeader(self.hwi, ctypes.byref(hdr), hdr_size)
+                except Exception: pass
+
+    def stop(self):
+        self._running = False
+        if self.hwi:
+            try: ctypes.windll.winmm.waveInReset(self.hwi)
+            except Exception: pass
+        if self._thread:
+            self._thread.join(timeout=2)
+        if self.hwi:
+            try: ctypes.windll.winmm.waveInClose(self.hwi)
+            except Exception: pass
+            self.hwi = None
+
+
+class LiveSession:
+    HOST = "generativelanguage.googleapis.com"
+
+    def __init__(self, on_text, on_status, on_closed, on_stream=None):
+        self.on_text = on_text
+        self.on_status = on_status
+        self.on_closed = on_closed
+        self.on_stream = on_stream
+        self.ws = None
+        self.mic = None
+        self.player = None
+        self._running = False
+        self._recv_thread = None
+        self._stream_speaker = None
+        self._interrupted = False
+        self._player_lock = threading.Lock()
+
+    def _get_player(self):
+        with self._player_lock:
+            if self._interrupted:
+                return None
+            if self.player is None:
+                import nvwave
+                try:
+                    device = ""
+                    try:
+                        device = config.conf["audio"]["outputDevice"]
+                    except (KeyError, IndexError):
+                        try:
+                            device = config.conf["speech"]["outputDevice"]
+                        except (KeyError, IndexError):
+                            pass
+                    self.player = nvwave.WavePlayer(channels=1, samplesPerSec=24000, bitsPerSample=16, outputDevice=device)
+                except Exception as e:
+                    log.warning(f"Live: WavePlayer with configured device failed ({e}); using default device.")
+                    self.player = nvwave.WavePlayer(channels=1, samplesPerSec=24000, bitsPerSample=16)
+            return self.player
+
+    def _stop_player(self):
+        with self._player_lock:
+            self._interrupted = True
+            if self.player:
+                try:
+                    self.player.stop()
+                    self.player.close()
+                except Exception: pass
+                self.player = None
+
+    def _resolve_model(self):
+        conf = config.conf["VisionAssistant"]
+        default_live = "gemini-3.1-flash-live-preview"
+        provider = conf["active_provider"]
+        model = ""
+        if conf.get("advanced_model_routing", False):
+            model = conf.get(f"{provider}_live_model", "").strip()
+        if not model:
+            model = conf.get("live_model", default_live).strip()
+        if not model:
+            model = default_live
+        if "live" not in model.lower():
+            log.warning(f"Live: selected model '{model}' is not a Live model; using '{default_live}'.")
+            model = default_live
+        return model
+
+    def _resolve_host(self):
+        try:
+            base = AIHandler.get_base_url(config.conf["VisionAssistant"]["active_provider"])
+            host = urlparse(base).hostname
+            if host:
+                return host
+        except Exception:
+            pass
+        return self.HOST
+
+    def start(self):
+        keys = AIHandler.get_keys(config.conf["VisionAssistant"]["active_provider"])
+        if not keys:
+            # Translators: Error when no API keys are found in settings
+            self.on_status("ERROR:" + _("No API Keys configured."))
+            return False
+        model = self._resolve_model()
+        voice = ""
+        thinking_level = ""
+        plugin = _vision_assistant_instance
+        if plugin and getattr(plugin, "live_dlg", None) and plugin.live_dlg:
+            try:
+                dlg = plugin.live_dlg
+                if hasattr(dlg, "voice_sel") and dlg.voice_sel:
+                    sel = dlg.voice_sel.GetSelection()
+                    if sel != wx.NOT_FOUND:
+                        voice = GEMINI_VOICES[sel][0]
+                if hasattr(dlg, "thinking_sel") and dlg.thinking_sel:
+                    t_sel = dlg.thinking_sel.GetSelection()
+                    if t_sel != wx.NOT_FOUND:
+                        thinking_level = dlg.thinking_choices[t_sel][1]
+            except Exception:
+                pass
+        if not voice:
+            voice = config.conf["VisionAssistant"].get("tts_voice", "Puck").strip() or "Puck"
+        if not thinking_level:
+            thinking_level = config.conf["VisionAssistant"].get("live_thinking_level", "medium").strip() or "medium"
+        host = self._resolve_host()
+        path = f"/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={keys[0]}"
+        try:
+            self.ws = _MinimalWebSocket(host, path)
+            self.ws.connect()
+        except Exception as e:
+            log.error(f"Live connect failed: {e}", exc_info=True)
+            # Translators: Error shown when the live voice session fails to connect.
+            self.on_status("ERROR:" + _("Could not connect to the Live service."))
+            return False
+
+        lang = get_lang_name("ai_response_language")
+        live_instruction = apply_prompt_template(
+            get_prompt_text("live_assistant_system"), [("response_lang", lang)]
+        )
+        setup = {
+            "setup": {
+                "model": f"models/{model}",
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+                    "thinkingConfig": {
+                        "thinkingLevel": thinking_level
+                    }
+                },
+                "realtimeInputConfig": {
+                    "automaticActivityDetection": {
+                        "disabled": False
+                    }
+                },
+                "systemInstruction": {"parts": [{"text": live_instruction}]},
+                "outputAudioTranscription": {},
+                "inputAudioTranscription": {},
+            }
+        }
+        self.ws.send_text(json.dumps(setup))
+        self._running = True
+        self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
+        self._recv_thread.start()
+        try:
+            self.mic = _MicCapture(self._on_mic_data, block_ms=100)
+            self.mic.start()
+        except Exception as e:
+            log.error(f"Mic capture failed: {e}", exc_info=True)
+            # Translators: Error shown when the microphone cannot be opened for the live session.
+            self.on_status("ERROR:" + _("Could not open the microphone."))
+            self.stop()
+            return False
+        return True
+
+    def _on_mic_data(self, pcm_bytes):
+        if not self._running or not self.ws or self.ws.closed:
+            return
+
+        try:
+            import array
+            samples = array.array('h', pcm_bytes)
+            peak = max(abs(s) for s in samples)
+            if peak > 3000:  
+                if self.player is not None:
+                    self._stop_player()
+                    try:
+                        cancel_msg = {"clientContent": {"turnComplete": True}}
+                        self.ws.send_text(json.dumps(cancel_msg))
+                    except Exception: pass
+        except Exception:
+            pass
+
+        msg = {
+            "realtimeInput": {
+                "audio": {
+                    "mimeType": "audio/pcm;rate=16000",
+                    "data": base64.b64encode(pcm_bytes).decode()
+                }
+            }
+        }
+        try:
+            self.ws.send_text(json.dumps(msg))
+        except Exception:
+            pass
+
+    def send_video_frame(self, jpeg_b64):
+        if not self._running or not self.ws or self.ws.closed or not jpeg_b64:
+            return
+        msg = {
+            "realtimeInput": {
+                "video": {"mimeType": "image/jpeg", "data": jpeg_b64}
+            }
+        }
+        try:
+            self.ws.send_text(json.dumps(msg))
+        except Exception:
+            pass
+
+    def _recv_loop(self):
+        while self._running:
+            opcode, payload = self.ws.recv()
+            if opcode is None:
+                if self._running:
+                    reason = self.ws.close_reason
+                    # Translators: Line shown when the live server unexpectedly closes the connection. {reason} is the server's reason.
+                    self.on_text(_("[Connection closed: {reason}]").format(reason=reason or _("unknown")))
+                break
+            if opcode != 0x1 and opcode != 0x2:
+                continue
+            try:
+                data = json.loads(payload.decode("utf-8", "replace"))
+            except Exception:
+                continue
+            try:
+                self._handle_message(data)
+            except Exception as e:
+                log.error(f"Live message handling failed: {e}")
+        if self._running:
+            self.stop()
+
+    def _handle_message(self, data):
+        if "setupComplete" in data:
+            # Translators: Message announced by NVDA when the live voice conversation starts.
+            self.on_status("STATUS:" + _("Live conversation started. You can speak now."))
+            return
+        if "error" in data:
+            err = data.get("error", {})
+            err_msg = err.get("message") if isinstance(err, dict) else str(err)
+            log.error(f"Live server error: {err_msg}")
+            self.on_status("ERROR:" + str(err_msg))
+            return
+
+        server_content = data.get("serverContent")
+        if not server_content:
+            return
+
+        if server_content.get("interrupted"):
+            self._stop_player()
+            self._end_stream_line()
+
+        if "inputTranscription" in server_content or "input_transcription" in server_content:
+            self._interrupted = False
+            in_tx = server_content.get("inputTranscription") or server_content.get("input_transcription") or {}
+            if in_tx.get("text"):
+                # Translators: Prefix for the user's transcribed speech line in the Live Assistant history.
+                self._stream("user", _("You: "), in_tx["text"])
+
+        out_tx = server_content.get("outputTranscription") or server_content.get("output_transcription")
+        if out_tx and out_tx.get("text"):
+            # Translators: Prefix for an AI message line in the Live Assistant history.
+            self._stream("ai", _("AI: "), out_tx["text"])
+
+        model_turn = server_content.get("modelTurn") or server_content.get("model_turn") or {}
+        for part in model_turn.get("parts", []):
+            inline = part.get("inlineData") or part.get("inline_data")
+            if inline and inline.get("data"):
+                if not self._interrupted:
+                    try:
+                        p = self._get_player()
+                        if p:
+                            p.feed(base64.b64decode(inline["data"]))
+                    except Exception as e:
+                        log.error(f"Live playback failed: {e}")
+            text = part.get("text")
+            if text:
+                # Translators: Prefix for an AI message line in the Live Assistant history.
+                self._stream("ai", _("AI: "), text)
+
+        if server_content.get("turnComplete") or server_content.get("turn_complete"):
+            self._interrupted = False
+            self._end_stream_line()
+
+    def _stream(self, speaker, prefix, text):
+        if self._stream_speaker != speaker:
+            if self._stream_speaker is not None and self.on_stream:
+                self.on_stream("\n")
+            if self.on_stream:
+                self.on_stream(prefix)
+            self._stream_speaker = speaker
+        if self.on_stream:
+            self.on_stream(text)
+
+    def _end_stream_line(self):
+        if self._stream_speaker is not None and self.on_stream:
+            self.on_stream("\n")
+        self._stream_speaker = None
+
+    def stop(self):
+        if not self._running and self.ws is None:
+            return
+        self._running = False
+        if self.mic:
+            try: self.mic.stop()
+            except Exception: pass
+            self.mic = None
+        if self.ws:
+            try: self.ws.close()
+            except Exception: pass
+            self.ws = None
+        self._stop_player()
+        if self.on_closed:
+            self.on_closed()
+
+
+class LiveAssistantDialog(wx.Dialog):
+    instance = None
+
+    def __init__(self, parent, start_callback, end_callback):
+        # Translators: Title of the Live Assistant conversation window.
+        title_text = _("{name} - Live Assistant").format(name=ADDON_NAME)
+        super().__init__(parent, title=title_text, size=(500, 500), style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        self.start_callback = start_callback
+        self.end_callback = end_callback
+        self.is_active = True
+        LiveAssistantDialog.instance = self
+
+        panel = wx.Panel(self)
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # Translators: Label for the conversation history area in the Live Assistant window.
+        sizer.Add(wx.StaticText(panel, label=_("Conversation:")), 0, wx.ALL, 5)
+        self.history = wx.TextCtrl(panel, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2)
+        sizer.Add(self.history, 1, wx.EXPAND | wx.ALL, 5)
+        
+        hbox_voice = wx.BoxSizer(wx.HORIZONTAL)
+        # Translators: Label for TTS Voice selection in the Live Assistant window.
+        hbox_voice.Add(wx.StaticText(panel, label=_("&TTS Voice:")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        
+        self.voice_sel = wx.Choice(panel, choices=[f"{v[0]} - {v[1]}" for v in GEMINI_VOICES])
+        curr_voice = config.conf["VisionAssistant"].get("tts_voice", "Puck")
+        for i, v in enumerate(GEMINI_VOICES):
+            if v[0] == curr_voice:
+                self.voice_sel.SetSelection(i)
+                break
+        else:
+            if self.voice_sel.GetCount() > 0:
+                self.voice_sel.SetSelection(0)
+        
+        self.voice_sel.Bind(wx.EVT_CHOICE, self.on_voice_change)
+        hbox_voice.Add(self.voice_sel, 1, wx.EXPAND)
+        sizer.Add(hbox_voice, 0, wx.EXPAND | wx.ALL, 5)
+
+        hbox_thinking = wx.BoxSizer(wx.HORIZONTAL)
+        # Translators: Label for Thinking Depth selection in the Live Assistant window.
+        hbox_thinking.Add(wx.StaticText(panel, label=_("Thinking &Depth:")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        
+        self.thinking_choices = [
+            # Translators: Thinking level option for no reasoning (lowest latency)
+            (_("Minimal (Fastest)"), "minimal"),
+            # Translators: Thinking level option for slight reasoning
+            (_("Low (Agentic)"), "low"),
+            # Translators: Thinking level option for standard reasoning (balanced)
+            (_("Medium (Balanced)"), "medium"),
+            # Translators: Thinking level option for deep reasoning
+            (_("High (Deep)"), "high")
+        ]
+        self.thinking_sel = wx.Choice(panel, choices=[x[0] for x in self.thinking_choices])
+        curr_thinking = config.conf["VisionAssistant"].get("live_thinking_level", "medium")
+        for i, x in enumerate(self.thinking_choices):
+            if x[1] == curr_thinking:
+                self.thinking_sel.SetSelection(i)
+                break
+        else:
+            self.thinking_sel.SetSelection(2)
+            
+        self.thinking_sel.Bind(wx.EVT_CHOICE, self.on_thinking_change)
+        hbox_thinking.Add(self.thinking_sel, 1, wx.EXPAND)
+        sizer.Add(hbox_thinking, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Translators: Button that ends the live voice conversation.
+        self.toggle_btn = wx.Button(panel, label=_("&End"))
+        self.toggle_btn.Bind(wx.EVT_BUTTON, self.on_toggle)
+        sizer.Add(self.toggle_btn, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        
+        panel.SetSizer(sizer)
+        
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        main_sizer.Add(panel, 1, wx.EXPAND)
+        self.SetSizer(main_sizer)
+        
+        self.Bind(wx.EVT_CLOSE, self.on_close)
+        self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
+        self.history.SetFocus()
+
+    def on_voice_change(self, event):
+        sel = self.voice_sel.GetSelection()
+        if sel != wx.NOT_FOUND:
+            config.conf["VisionAssistant"]["tts_voice"] = GEMINI_VOICES[sel][0]
+            if self.is_active:
+                # Translators: Message shown in conversation log when voice is changed
+                self.append_line(_("--- Changing voice, reconnecting... ---"))
+                self._restart_session()
+
+    def on_thinking_change(self, event):
+        sel = self.thinking_sel.GetSelection()
+        if sel != wx.NOT_FOUND:
+            config.conf["VisionAssistant"]["live_thinking_level"] = self.thinking_choices[sel][1]
+            if self.is_active:
+                # Translators: Message shown in conversation log when thinking depth is changed
+                self.append_line(_("--- Changing thinking depth, reconnecting... ---"))
+                self._restart_session()
+
+    def _restart_session(self):
+        if self.end_callback:
+            self.end_callback()
+        
+        def restart():
+            if self.start_callback:
+                self.start_callback()
+        
+        wx.CallLater(1200, restart)
+
+    def on_char_hook(self, event):
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self.Close()
+        else:
+            event.Skip()
+
+    def append_line(self, line):
+        self.history.AppendText(line + "\n")
+
+    def append_raw(self, text):
+        self.history.AppendText(text)
+
+    def set_active(self, active):
+        self.is_active = active
+        # Translators: Button label to end the live conversation / Button label to start it again.
+        self.toggle_btn.SetLabel(_("&End") if active else _("&Start"))
+
+    def on_toggle(self, event):
+        if self.is_active:
+            if self.end_callback:
+                self.end_callback()
+        else:
+            if self.start_callback:
+                self.start_callback()
+
+    def on_close(self, event):
+        if self.is_active and self.end_callback:
+            self.end_callback()
+        LiveAssistantDialog.instance = None
+        self.Destroy()
 
 # --- Update Manager ---
 class UpdateDialog(wx.Dialog):
@@ -2338,7 +3045,6 @@ class UpdateDialog(wx.Dialog):
         self.yes_btn.SetDefault()
         self.yes_btn.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_YES))
         self.no_btn.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_NO))
-
 
 class UpdateManager:
     def __init__(self, repo_name):
@@ -2809,7 +3515,13 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         advRSizer.Add(self.lbl_advOperator, 0, wx.ALL, 2)
         self.advOperatorModel = wx.Choice(self.advRoutingBox, choices=[])
         advRSizer.Add(self.advOperatorModel, 0, wx.EXPAND | wx.ALL, 2)
-        
+
+        # Translators: Label for the Live Assistant model selection in the Advanced Model Routing section (Gemini only).
+        self.lbl_advLive = wx.StaticText(self.advRoutingBox, label=_("Live Assistant Model (Gemini only):"))
+        advRSizer.Add(self.lbl_advLive, 0, wx.ALL, 2)
+        self.advLiveModel = wx.Choice(self.advRoutingBox, choices=[])
+        advRSizer.Add(self.advLiveModel, 0, wx.EXPAND | wx.ALL, 2)
+
         self.advRoutingBox.SetSizer(advRSizer)
         cHelper.addItem(self.advRoutingBox)
 
@@ -2829,6 +3541,9 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         # Translators: Checkbox to skip chat window and only speak AI responses
         self.skipChatDialog = cHelper.addItem(wx.CheckBox(self.connectionBox, label=_("Direct Output (No Chat Window)")))
         self.skipChatDialog.Value = config.conf["VisionAssistant"]["skip_chat_dialog"]
+        # Translators: Checkbox to start the Live Assistant without its conversation window (open it later with the Show Last Result key).
+        self.liveDirectOutput = cHelper.addItem(wx.CheckBox(self.connectionBox, label=_("Live Assistant: Direct Output (No Window)")))
+        self.liveDirectOutput.Value = config.conf["VisionAssistant"]["live_direct_output"]
         settingsSizer.Add(connectionSizer, 0, wx.EXPAND | wx.ALL, 5)
         
         # --- AI Behavior Group ---
@@ -2947,11 +3662,8 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             voices = OPENAI_VOICES
         else:
             voices = AIHandler.get_voices(p_name) or GEMINI_VOICES
-        # Render the list immediately (either Gemini/OpenAI hardcoded, or MiniMax cache hit)
         for v in voices:
             self.voice_sel.Append(f"{v[0]} - {v[1]}", v[0])
-        # If this is MiniMax, trigger async refresh in the background to fetch the
-        # latest official voice list from /v1/get_voice (the cache may be stale or empty)
         if p_name == "minimax":
             threading.Thread(target=self._refresh_minimax_voices, daemon=True).start()
         else:
@@ -2959,14 +3671,11 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self._select_voice_in_list(curr_voice)
 
     def _refresh_minimax_voices(self):
-        # Background thread: fetch fresh MiniMax voice list, then update UI
         try:
-            # Force a refresh by clearing cache and re-fetching
             config.conf["VisionAssistant"]["minimax_voices_cache"] = ""
             config.conf["VisionAssistant"]["minimax_voices_cache_time"] = 0
             voices = AIHandler.get_voices("minimax")
             if voices and hasattr(self, 'voice_sel'):
-                # wx widget updates must happen on the main thread
                 wx.CallAfter(self._populate_voice_sel, voices)
         except Exception as e:
             log.warning(f"Background MiniMax voice refresh failed: {e}")
@@ -2976,7 +3685,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.voice_sel.Clear()
             for v in voices:
                 self.voice_sel.Append(f"{v[0]} - {v[1]}", v[0])
-            curr_voice = config.conf["VisionAssistant"].get("tts_voice", "Portuguese_Narrator")
+            curr_voice = config.conf["VisionAssistant"].get("tts_voice", "English_expressive_narrator")
             self._select_voice_in_list(curr_voice)
         except Exception as e:
             log.warning(f"Failed to populate voice_sel: {e}")
@@ -2991,25 +3700,6 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
                 self.voice_sel.SetSelection(0)
         except Exception:
             pass
-
-    def _updateVoiceList_legacy(self, p_name):
-        # Legacy fallback - uses get_voices() so it works for MiniMax too
-        self.voice_sel.Clear()
-        voices = AIHandler.get_voices(p_name) or (OPENAI_VOICES if p_name in ["openai", "custom"] else GEMINI_VOICES)
-        for v in voices:
-            self.voice_sel.Append(f"{v[0]} - {v[1]}", v[0])
-
-        curr_voice = config.conf["VisionAssistant"].get("tts_voice", "Puck")
-        idx = wx.NOT_FOUND
-        for i in range(self.voice_sel.GetCount()):
-            if self.voice_sel.GetClientData(i) == curr_voice:
-                idx = i
-                break
-        
-        if idx != wx.NOT_FOUND:
-            self.voice_sel.SetSelection(idx)
-        else:
-            self.voice_sel.SetSelection(0)
 
     def _refreshPromptSummary(self):
         # Translators: Summary text for prompt counts in settings.
@@ -3040,6 +3730,15 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
                 top.Enable(True)
                 top.SetFocus()
 
+    def _live_supported_for(self, provider):
+        if provider == "gemini":
+            return True
+        if provider == "custom":
+            if hasattr(self, "customType") and self.customType.GetSelection() != wx.NOT_FOUND:
+                return self.customType.GetSelection() == 1
+            return config.conf["VisionAssistant"].get("custom_api_type", "openai") == "gemini"
+        return False
+
     def updateCustomFieldsVisibility(self, provider):
         is_custom = (provider == "custom")
         self.customBox.Show(is_custom)
@@ -3049,6 +3748,9 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         routing_enabled = self.advRoutingCheck.Value
         self.advRoutingBox.Show(routing_enabled)
         
+        live_supported = self._live_supported_for(provider)
+        self.liveDirectOutput.Show(live_supported)
+        
         if routing_enabled:
             self.advOcrModel.Show(True)
             self.advSttModel.Show(True)
@@ -3056,6 +3758,8 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.lbl_advTts.Show(tts_supported)
             self.advOperatorModel.Show(True)
             self.lbl_advOperator.Show(True)
+            self.advLiveModel.Show(live_supported)
+            self.lbl_advLive.Show(live_supported)
 
         self.voice_sel.Show(tts_supported)
         self.lbl_voice.Show(tts_supported)
@@ -3203,6 +3907,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         ui.message(_("Local AI configured successfully!"))
 
     def _onSetupLocalAIFail(self, err_msg):
+        # Translators: Title of an error dialog box
         wx.MessageBox(err_msg, _("Error"), wx.OK | wx.ICON_ERROR)
 
     def onFetchModels(self, event):
@@ -3238,15 +3943,17 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.advSttModel.Clear()
             self.advTtsModel.Clear()
             self.advOperatorModel.Clear()
-            
+            self.advLiveModel.Clear()
+
             # Translators: Option to follow the main model selected in the primary dropdown
             default_main_label = _("Default (Main Model)")
             # Translators: Option for the system to automatically choose the best model for this specific task
             auto_task_label = _("Auto (Optimized)")
-            
+
             self.advOcrModel.Append(default_main_label, "")
             self.advSttModel.Append(default_main_label, "")
             self.advOperatorModel.Append(default_main_label, "")
+            self.advLiveModel.Append(auto_task_label, "")
             self.advTtsModel.Append(auto_task_label, "")
 
             self._current_model_ids = []
@@ -3260,6 +3967,8 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
                 self.advSttModel.Append(m_name, m_id)
                 self.advTtsModel.Append(m_name, m_id)
                 self.advOperatorModel.Append(m_name, m_id)
+                if "live" in m_id.lower():
+                    self.advLiveModel.Append(m_name, m_id)
                 storage_parts.append(f"{m_id}|{m_name}")
             
             config.conf["VisionAssistant"][f"{p_name}_models_list"] = ",".join(storage_parts)
@@ -3276,8 +3985,11 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.advSttModel.SetSelection(0)
             self.advTtsModel.SetSelection(0)
             self.advOperatorModel.SetSelection(0)
+            self.advLiveModel.SetSelection(0)
             
             self._all_models_backup = [(self.model.GetString(i), self.model.GetClientData(i)) for i in range(self.model.GetCount())]
+            
+            self.updateVoiceList(p_name)
             
             self.updateCustomFieldsVisibility(p_name)
             # Translators: Status message when the AI models list is successfully refreshed.
@@ -3292,15 +4004,17 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         self.advSttModel.Clear()
         self.advTtsModel.Clear()
         self.advOperatorModel.Clear()
-        
+        self.advLiveModel.Clear()
+
         # Translators: Option to follow the main model selected in the primary dropdown.
         default_main_label = _("Default (Main Model)")
         # Translators: Option for the system to automatically choose the best model for this task.
         auto_task_label = _("Auto (Optimized)")
-        
+
         self.advOcrModel.Append(default_main_label, "")
         self.advSttModel.Append(default_main_label, "")
         self.advOperatorModel.Append(default_main_label, "")
+        self.advLiveModel.Append(auto_task_label, "")
         self.advTtsModel.Append(auto_task_label, "")
 
         self._current_model_ids = []
@@ -3324,6 +4038,8 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.advSttModel.Append(m_name, m_id)
             self.advTtsModel.Append(m_name, m_id)
             self.advOperatorModel.Append(m_name, m_id)
+            if "live" in m_id.lower():
+                self.advLiveModel.Append(m_name, m_id)
             if m_id not in self._current_model_ids: self._current_model_ids.append(m_id)
         
         m_key = "model_name" if p_name == "gemini" else f"{p_name}_model_name"
@@ -3343,15 +4059,18 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             else:
                 self.model.ChangeValue("")
             
-        for attr, conf_key in [
+        routing_map = [
             (self.advOcrModel, f"{p_name}_ocr_model"),
             (self.advSttModel, f"{p_name}_stt_model"),
             (self.advTtsModel, f"{p_name}_tts_model"),
-            (self.advOperatorModel, f"{p_name}_operator_model")
-        ]:
+            (self.advOperatorModel, f"{p_name}_operator_model"),
+        ]
+        if self._live_supported_for(p_name):
+            routing_map.append((self.advLiveModel, f"{p_name}_live_model"))
+        for attr, conf_key in routing_map:
             saved_id = config.conf["VisionAssistant"].get(conf_key, "")
             for i in range(attr.GetCount()):
-                if attr.GetClientData(i) == saved_id: 
+                if attr.GetClientData(i) == saved_id:
                     attr.SetSelection(i)
                     break
             else: attr.SetSelection(0)
@@ -3426,12 +4145,15 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
                     config.conf["VisionAssistant"][m_key] = model_val
                 
             config.conf["VisionAssistant"]["advanced_model_routing"] = self.advRoutingCheck.Value
-            for attr, conf_key in [
+            routing_save = [
                 (self.advOcrModel, f"{p_name}_ocr_model"),
                 (self.advSttModel, f"{p_name}_stt_model"),
                 (self.advTtsModel, f"{p_name}_tts_model"),
-                (self.advOperatorModel, f"{p_name}_operator_model")
-            ]:
+                (self.advOperatorModel, f"{p_name}_operator_model"),
+            ]
+            if self._live_supported_for(p_name):
+                routing_save.append((self.advLiveModel, f"{p_name}_live_model"))
+            for attr, conf_key in routing_save:
                 idx = attr.GetSelection()
                 if idx != wx.NOT_FOUND:
                     config.conf["VisionAssistant"][conf_key] = attr.GetClientData(idx)
@@ -3475,6 +4197,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             config.conf["VisionAssistant"]["clean_markdown_chat"] = self.cleanMarkdown.Value
             config.conf["VisionAssistant"]["copy_to_clipboard"] = self.copyToClipboard.Value
             config.conf["VisionAssistant"]["skip_chat_dialog"] = self.skipChatDialog.Value
+            config.conf["VisionAssistant"]["live_direct_output"] = self.liveDirectOutput.Value
             config.conf["VisionAssistant"]["captcha_mode"] = 'navigator' if self.captchaMode.GetSelection() == 0 else 'fullscreen'
             config.conf["VisionAssistant"]["ocr_engine"] = OCR_ENGINES[self.ocr_sel.GetSelection()][1]
             config.conf["VisionAssistant"]["custom_prompts_v2"] = serialize_custom_prompts_v2(self.customPromptItems)
@@ -3584,7 +4307,7 @@ class RangeDialog(wx.Dialog):
             'start': self.spin_from.GetValue() - 1,
             'end': self.spin_to.GetValue() - 1,
             'translate': self.chk_trans.IsChecked(),
-            'lang': TARGET_LIST[self.cmb_lang.GetSelection()][0]
+            'lang': TARGET_LIST[self.cmb_lang.GetSelection()][1]
         }
 
 class ChatDialog(wx.Dialog):
@@ -3637,6 +4360,7 @@ class ChatDialog(wx.Dialog):
                     self.file_uri = uri
                     wx.CallAfter(self.on_ready)
                 else:
+                    # Translators: Error message shown when uploading a file fails
                     err_msg = str(uri)[6:] if uri else _("Upload failed.")
                     wx.CallAfter(show_error_dialog, err_msg)
                     wx.CallAfter(self.Close)
@@ -3795,10 +4519,6 @@ class DocumentViewerDialog(wx.Dialog):
             hbox_tts.Add(self.lbl_voice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
             
             p_name = config.conf["VisionAssistant"]["active_provider"]
-            # Use cached/hardcoded voices synchronously (no API call here).
-            # Background thread (_refresh_minimax_voices_in_format_dialog) fetches
-            # fresh list from API after dialog opens. This prevents blocking
-            # the main thread on API calls.
             voices = AIHandler.get_voices(p_name) or (OPENAI_VOICES if p_name in ["openai", "custom"] else GEMINI_VOICES)
             voice_choices = [f"{v[0]} - {v[1]}" for v in voices]
 
@@ -3808,11 +4528,9 @@ class DocumentViewerDialog(wx.Dialog):
                 v_idx = next(i for i, v in enumerate(voices) if v[0] == curr_voice)
                 self.voice_sel.SetSelection(v_idx)
             except Exception: self.voice_sel.SetSelection(0)
-            # If this is MiniMax, fetch the fresh voice list from the API in the background
-            # (the cache may be empty, stale, or missing new voices added by MiniMax)
             if p_name == "minimax":
                 threading.Thread(target=self._refresh_minimax_voices_in_format_dialog, daemon=True).start()
-            
+
             hbox_tts.Add(self.voice_sel, 1, wx.EXPAND)
             vbox.Add(hbox_tts, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         # Translators: Label for a button to close the dialog.
@@ -3842,9 +4560,16 @@ class DocumentViewerDialog(wx.Dialog):
 
     def on_close(self, event):
         self.thread_pool.shutdown(wait=False)
+        if _vision_assistant_instance:
+            # بازنشانی وضعیت به آیدل در صورت بستن پنجره توسط کاربر
+            wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', _("Idle"))
+            if getattr(_vision_assistant_instance, "doc_viewer_dlg", None) is self:
+                _vision_assistant_instance.doc_viewer_dlg = None
         self.Destroy()
 
     def start_auto_processing(self):
+        if _vision_assistant_instance:
+            wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', _("Extracting Text..."))
         engine = config.conf["VisionAssistant"]["ocr_engine"]
         if engine == 'gemini' and AIHandler.is_gemini():
             threading.Thread(target=self.gemini_scan_batch_thread, daemon=True).start()
@@ -3883,6 +4608,13 @@ class DocumentViewerDialog(wx.Dialog):
         if page_num in self.page_cache: return
         text = self._get_page_text_logic(page_num)
         self.page_cache[page_num] = text
+        if _vision_assistant_instance:
+            completed = len(self.page_cache)
+            progress_msg = _("Processing page {current} of {total}...").format(current=completed, total=self.range_count)
+            wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', progress_msg)
+            if completed >= self.range_count:
+                wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', _("Idle"))
+
         if page_num == self.current_page:
             wx.CallAfter(self.update_view)
             # Translators: Spoken message when the current page is ready
@@ -3911,11 +4643,8 @@ class DocumentViewerDialog(wx.Dialog):
                 if engine == 'gemini':
                     img_b64 = base64.b64encode(img_bytes).decode('utf-8')
                     text = AIHandler.ocr(img_b64, "image/jpeg")
-                
-                if not text or not text.strip() or engine == 'chrome':
+                elif engine == 'chrome':
                     text = ChromeOCREngine.recognize(img_bytes)
-                    if not text or not text.strip():
-                        text = SmartProgrammersOCREngine.recognize(img_bytes)
                 
                 if not text or not text.strip():
                     # Translators: Placeholder text when OCR fails
@@ -4082,6 +4811,8 @@ class DocumentViewerDialog(wx.Dialog):
             
             # Translators: Status message showing the progress of document scanning. {start} and {end} are page numbers.
             progress_msg = _("Processing pages {start} to {end}...").format(start=i+1, end=batch_end+1)
+            if _vision_assistant_instance:
+                wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', progress_msg)
             wx.CallAfter(ui.message, progress_msg)
 
             upload_path = self.v_doc.create_merged_pdf(i, batch_end)
@@ -4154,6 +4885,7 @@ class DocumentViewerDialog(wx.Dialog):
             while i not in self.page_cache and wait_count < 600:
                 time.sleep(0.1)
                 wait_count += 1
+            # Translators: Placeholder text shown in the document reader when processing takes too long
             full_text.append(self.page_cache.get(i, _("[Processing timeout]")))
         final_text = "\n".join(full_text).strip()
         if not final_text: return
@@ -4164,6 +4896,10 @@ class DocumentViewerDialog(wx.Dialog):
         path = get_file_path(_("Save Audio"), "MP3 Files (*.mp3)|*.mp3|WAV Files (*.wav)|*.wav", mode="save")
         if path:
             voice = config.conf["VisionAssistant"]["tts_voice"]
+            if hasattr(self, "voice_sel") and self.voice_sel:
+                sel = self.voice_sel.GetSelection()
+                if sel != wx.NOT_FOUND:
+                    voice = self.voice_sel.GetClientData(sel)
             threading.Thread(target=self.tts_worker, args=(text, voice, path), daemon=True).start()
 
     def tts_worker(self, text, voice, path):
@@ -4259,7 +4995,7 @@ class DocumentViewerDialog(wx.Dialog):
                 while i not in self.page_cache and wait_count < 600:
                     time.sleep(0.1)
                     wait_count += 1
-                    
+                # Translators: Placeholder text shown in the document reader when processing takes too long
                 txt = self.page_cache.get(i, _("[Processing timeout]"))
                 
                 if is_html:
@@ -4285,16 +5021,12 @@ class DocumentViewerDialog(wx.Dialog):
         finally: wx.CallAfter(self.btn_save.Enable)
 
     def _refresh_minimax_voices_in_format_dialog(self):
-        # Background refresh: fetch fresh MiniMax voice list and update the
-        # combobox in the Document Format dialog.
         try:
-            # Bypass cache to force a fresh fetch from the API
             config.conf["VisionAssistant"]["minimax_voices_cache"] = ""
             try:
                 config.conf["VisionAssistant"]["minimax_voices_cache_time"] = 0
             except (TypeError, ValueError):
-                # cache_time may be a string from older configs; reset defensively
-                config.conf["VisionAssistant"]["minimax_voices_cache_time"] = 0.0
+                config.conf["VisionAssistant"]["minimax_voices_cache_time"] = 0
             voices = AIHandler.get_voices("minimax")
             if voices and hasattr(self, 'voice_sel') and self.voice_sel:
                 wx.CallAfter(self._populate_format_voice_sel, voices)
@@ -4308,7 +5040,7 @@ class DocumentViewerDialog(wx.Dialog):
             self.voice_sel.Clear()
             for v in voices:
                 self.voice_sel.Append(f"{v[0]} - {v[1]}", v[0])
-            curr_voice = config.conf["VisionAssistant"].get("tts_voice", "Portuguese_Narrator")
+            curr_voice = config.conf["VisionAssistant"].get("tts_voice", "English_expressive_narrator")
             for i in range(self.voice_sel.GetCount()):
                 if self.voice_sel.GetClientData(i) == curr_voice:
                     self.voice_sel.SetSelection(i)
@@ -4361,7 +5093,7 @@ def _generate_object_signature(obj):
     except Exception:
         raw_name = getattr(obj, "name", "")
     raw_name = raw_name or ""
-
+    
     return f"sig_{role_type}_{unique_signature}_{raw_name}"
 
 class CustomLabelOverlay(NVDAObjects.NVDAObject):
@@ -4624,6 +5356,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         self.translation_dlg = None
         self.toggling = False
         self._last_result_data = None
+        self.live_session = None
+        self.live_dlg = None
 
         self.labels_cache = {}
         if os.path.exists(LABELS_FILE):
@@ -4635,17 +5369,44 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
     def _getFocusedExplorerFile(self):
         try:
             hwnd = api.getForegroundObject().windowHandle
+            try:
+                root_hwnd = winUser.getAncestor(hwnd, winUser.GA_ROOT)
+            except Exception:
+                root_hwnd = hwnd
             shell = comtypes.client.CreateObject("Shell.Application")
             windows = shell.Windows()
             for win in windows:
                 try:
-                    if win.HWND == hwnd:
+                    if win.HWND in (hwnd, root_hwnd):
                         selected = win.Document.SelectedItems()
                         if selected.Count > 0:
                             return [selected.Item(i).Path for i in range(selected.Count)]
                 except Exception: continue
         except Exception: pass
         return []
+
+    def _getClipboardImageFile(self):
+        path = None
+        if not wx.TheClipboard.Open():
+            return None
+        try:
+            if wx.TheClipboard.IsSupported(wx.DataFormat(wx.DF_BITMAP)):
+                bmp_data = wx.BitmapDataObject()
+                if wx.TheClipboard.GetData(bmp_data):
+                    bmp = bmp_data.GetBitmap()
+                    if bmp.IsOk():
+                        fd, path = tempfile.mkstemp(suffix=".png")
+                        os.close(fd)
+                        if not bmp.SaveFile(path, wx.BITMAP_TYPE_PNG):
+                            try: os.remove(path)
+                            except Exception: pass
+                            path = None
+        except Exception as e:
+            log.error(f"Clipboard image extraction failed: {e}")
+            path = None
+        finally:
+            wx.TheClipboard.Close()
+        return path
 
     def _browse_and_run(self, worker_fn, wildcard, multiple=False):
         # Translators: Standard title for opening a file
@@ -4745,7 +5506,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         
         if hasattr(self, 'update_timer') and self.update_timer and self.update_timer.IsRunning():
             self.update_timer.Stop()
-        
+
+        if self.live_session:
+            try: self.live_session.stop()
+            except Exception: pass
+            self.live_session = None
+
         for dlg in [self.refine_dlg, self.refine_menu_dlg, self.vision_dlg, self.doc_dlg, self.translation_dlg]:
             if dlg:
                 try: dlg.Destroy()
@@ -4787,7 +5553,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             "Shift+L: " + _("Manages existing labels or scans the entire app to label unnamed elements.") + "\n" +
             "U: " + _("Checks for updates manually.") + "\n" +
             "Space: " + _("Shows the last AI response in a chat dialog for review or follow-up questions.") + "\n" +
-            "H: " + _("Shows a list of available commands in the layer.")
+            "H: " + _("Shows a list of available commands in the layer.") + "\n" +
+            "Control+L: " + _("Starts or ends a live voice conversation with the AI assistant.")
         )
         # Translators: Title of the help dialog
         ui.browseableMessage(help_msg, _("{name} Help").format(name=ADDON_NAME))
@@ -4801,11 +5568,107 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         msg = self.current_status if self.current_status else idle_msg
         ui.message(msg)
 
+    # Translators: Script description for Input Gestures dialog
+    @scriptHandler.script(description=_("Starts or ends a live voice conversation with the AI assistant."))
+    def script_toggleLiveAssistant(self, gesture):
+        if self.toggling: self.finish()
+        if self.live_session:
+            self._end_live_session()
+            return
+        if not AIHandler.is_gemini():
+            # Translators: Error shown when the Live Assistant is used with a non-Gemini provider.
+            show_error_dialog(_("The Live Assistant is only supported with the Gemini provider (or a Custom provider with API type set to Gemini)."))
+            return
+        self._start_live_session()
+
+    def _start_live_session(self):
+        if self.live_session or not AIHandler.is_gemini():
+            return
+        tones.beep(660, 120)
+        direct = config.conf["VisionAssistant"]["live_direct_output"]
+        self.live_session = LiveSession(
+            on_text=lambda line: wx.CallAfter(self._live_append, line),
+            on_status=lambda msg: wx.CallAfter(self._live_status, msg),
+            on_closed=lambda: wx.CallAfter(self._live_on_closed),
+            on_stream=lambda chunk: wx.CallAfter(self._live_stream, chunk),
+        )
+        if not direct:
+            self._show_live_window()
+        self._live_video_timer = wx.Timer(gui.mainFrame)
+        gui.mainFrame.Bind(wx.EVT_TIMER, self._on_live_video_tick, self._live_video_timer)
+        self._live_video_timer.Start(2000)
+        threading.Thread(target=self._start_live_worker, daemon=True).start()
+
+    def _show_live_window(self):
+        if getattr(self, "live_dlg", None) and LiveAssistantDialog.instance is self.live_dlg:
+            self.live_dlg.set_active(bool(self.live_session))
+        else:
+            self.live_dlg = LiveAssistantDialog(gui.mainFrame, self._start_live_session, self._end_live_session)
+            self.live_dlg.set_active(bool(self.live_session))
+            self.live_dlg.Show()
+        self.live_dlg.Raise()
+        self.live_dlg.history.SetFocus()
+
+    def _on_live_video_tick(self, event):
+        session = self.live_session
+        if not session:
+            return
+        jpeg_b64, w, h, m = self._capture_fullscreen()
+        if jpeg_b64:
+            threading.Thread(target=session.send_video_frame, args=(jpeg_b64,), daemon=True).start()
+
+    def _start_live_worker(self):
+        session = self.live_session
+        if session and not session.start():
+            wx.CallAfter(self._live_on_closed)
+
+    def _live_append(self, line):
+        if getattr(self, "live_dlg", None):
+            try: self.live_dlg.append_line(line)
+            except Exception: pass
+
+    def _live_stream(self, chunk):
+        if getattr(self, "live_dlg", None):
+            try: self.live_dlg.append_raw(chunk)
+            except Exception: pass
+
+    def _live_status(self, msg):
+        if msg.startswith("ERROR:"):
+            show_error_dialog(msg[6:])
+            self._end_live_session()
+        elif msg.startswith("STATUS:"):
+            self.report_status(msg[7:])
+
+    def _end_live_session(self):
+        if self.live_session:
+            try: self.live_session.stop()
+            except Exception: pass
+
+    def _live_on_closed(self):
+        self.live_session = None
+        if getattr(self, "_live_video_timer", None):
+            try:
+                self._live_video_timer.Stop()
+                gui.mainFrame.Unbind(wx.EVT_TIMER, handler=self._on_live_video_tick, source=self._live_video_timer)
+            except Exception: pass
+            self._live_video_timer = None
+        if getattr(self, "live_dlg", None) and LiveAssistantDialog.instance:
+            try:
+                self.live_dlg.set_active(False)
+                # Translators: Line appended to the conversation when the live session has ended.
+                self.live_dlg.append_line(_("--- Session ended ---"))
+            except Exception: pass
+        else:
+            self.live_dlg = None
+        tones.beep(440, 120)
+        # Translators: Message announced by NVDA when the live voice conversation ends.
+        self.report_status(_("Live conversation ended."))
+
     def _browse_file(self, wildcard):
         # Translators: Standard title for opening a file
         return get_file_path(_("Open"), wildcard)
 
-    def _upload_file_to_gemini(self, file_path, mime_type):
+    def _upload_file_to_gemini(self, file_path, mime_type, silent=False):
         p = config.conf["VisionAssistant"]["active_provider"]
         keys = AIHandler.get_keys(p)
         if not keys: return None
@@ -4831,7 +5694,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             for key in keys:
                 try:
                     req = request.Request(url, data=b'\r\n'.join(body), headers={"Authorization": f"Bearer {key}", "Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
-                    with get_proxy_opener(url).open(req, timeout=120) as r:
+                    with get_proxy_opener().open(req, timeout=120) as r:
                         res = json.loads(r.read().decode())
                         return res.get("id") or res.get("name")
                 except Exception: continue
@@ -4843,12 +5706,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             file_size = os.path.getsize(file_path)
             headers_init = {"X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start", "X-Goog-Upload-Header-Content-Length": str(file_size), "X-Goog-Upload-Header-Content-Type": mime_type, "Content-Type": "application/json", "x-goog-api-key": api_key}
             req_init = request.Request(base_upload_url, data=json.dumps({"file": {"display_name": os.path.basename(file_path)}}).encode(), headers=headers_init, method="POST")
-            with get_proxy_opener(base_upload_url).open(req_init, timeout=30) as r:
+            with get_proxy_opener().open(req_init, timeout=30) as r:
                 upload_url = r.headers.get("x-goog-upload-url")
             if not upload_url: return None
             with open(file_path, "rb") as f: data = f.read()
             req_up = request.Request(upload_url, data=data, headers={"Content-Length": str(file_size), "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize"}, method="POST")
-            with get_proxy_opener(upload_url).open(req_up, timeout=300) as r:
+            with get_proxy_opener().open(req_up, timeout=300) as r:
                 res = json.loads(r.read().decode())
                 file_name_id = res['file']['name']
             
@@ -4856,7 +5719,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             check_url = f"{p_base}/v1beta/{file_name_id}"
             for attempt in range(30):
                 req_check = request.Request(check_url, headers={"x-goog-api-key": api_key})
-                with get_proxy_opener(check_url).open(req_check, timeout=10) as r:
+                with get_proxy_opener().open(req_check, timeout=10) as r:
                     data = json.loads(r.read().decode())
                     if data.get('state') == "ACTIVE":
                         uri = data.get('uri')
@@ -4868,11 +5731,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             # Translators: Message of a dialog which may pop up while trying to upload a file
             msg = _("File Upload Error: {error}").format(error=e)
             self.report_status(msg)
-            show_error_dialog(msg)
+            if not silent:
+                show_error_dialog(msg)
             return None
-
-
-
 
     # Translators: Script description for Input Gestures dialog
     @scriptHandler.script(description=_("Records voice, transcribes it using AI, and types the result."))
@@ -5381,22 +6242,37 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
         def refine_callback(ctx, q, history, extra):
             atts, orig, first_p = ctx
-            parts = [{"text": q}]
-            current_user_msg = {"role": "user", "parts": parts}
-            messages = []
-            if len(history) <= 1: 
-                sys_parts = [{"text": first_p}]
-                for att in atts:
-                    if 'file_uri' in att:
-                        sys_parts.append({"file_data": {"mime_type": att['mime_type'], "file_uri": att['file_uri']}})
-                    elif 'data' in att:
-                        sys_parts.append({"inline_data": {"mime_type": att['mime_type'], "data": att['data']}})
-                messages.append({"role": "user", "parts": sys_parts})
-                if history: messages.append(history[0])
+            
+            if AIHandler.is_gemini():
+                parts = [{"text": q}]
+                current_user_msg = {"role": "user", "parts": parts}
+                messages = []
+                if len(history) <= 1: 
+                    sys_parts = [{"text": first_p}]
+                    for att in atts:
+                        if 'file_uri' in att:
+                            sys_parts.append({"file_data": {"mime_type": att['mime_type'], "file_uri": att['file_uri']}})
+                        elif 'data' in att:
+                            sys_parts.append({"inline_data": {"mime_type": att['mime_type'], "data": att['data']}})
+                    messages.append({"role": "user", "parts": sys_parts})
+                    if history: messages.append(history[0])
+                else:
+                    messages.extend(history)
+                messages.append(current_user_msg)
+                return AIHandler.call(messages), None
             else:
-                messages.extend(history)
-            messages.append(current_user_msg)
-            return AIHandler.call(messages), None
+                messages = []
+                messages.append({"role": "user", "content": first_p})
+                messages.append({"role": "assistant", "content": result_text})
+                
+                if history:
+                    for h in history:
+                        if h.get("role") == "model" and h["parts"][0]["text"] == result_text: continue
+                        role = "assistant" if h["role"] == "model" else "user"
+                        messages.append({"role": role, "content": h["parts"][0]["text"]})
+                
+                messages.append({"role": "user", "content": q})
+                return AIHandler.call(messages), None
 
         context = (attachments, original_text, initial_prompt)
         has_file_context = any('file_uri' in a for a in attachments)
@@ -5425,8 +6301,14 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         valid_paths = [p for p in focused_paths if p.lower().endswith(valid_exts)]
         if valid_paths:
             threading.Thread(target=self._pre_process_smart_file, args=(valid_paths,), daemon=True).start()
-        else:
-            wx.CallLater(100, self._open_smart_file_dialog)
+            return
+        clip_path = self._getClipboardImageFile()
+        if clip_path:
+            # Translators: Status reported when an image found in the clipboard is being processed.
+            self.report_status(_("Processing clipboard image..."))
+            threading.Thread(target=self._pre_process_smart_file, args=([clip_path],), daemon=True).start()
+            return
+        wx.CallLater(100, self._open_smart_file_dialog)
 
     def _open_smart_file_dialog(self):
         wc = "Files|*.pdf;*.jpg;*.jpeg;*.png;*.webp;*.tif;*.tiff"
@@ -5544,6 +6426,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             upload_supported = config.conf["VisionAssistant"].get("custom_upload_support", False)
 
         if engine == 'chrome' or not upload_supported:
+            self._ocr_completed_count = 0
             def page_worker(page_idx):
                 try:
                     f_path, internal_idx = v_doc.get_page_info(page_idx)
@@ -5563,6 +6446,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     
                     if do_translate:
                         txt = AIHandler.translate(txt, target_lang)
+                    self._ocr_completed_count += 1
+                    # Translators: Status message showing page-by-page progress during file OCR.
+                    progress_msg = _("Processing page {current} of {total}...").format(current=self._ocr_completed_count, total=total_pages)
+                    wx.CallAfter(setattr, self, 'current_status', progress_msg)
                     return f"--- Page {page_idx + 1} ---\n{txt}\n"
                 except Exception: return ""
 
@@ -5578,10 +6465,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             wx.CallAfter(self._open_doc_chat_dialog, full_text, [], full_text, full_text)
                 
         else:
+            raw_batch_size = config.conf["VisionAssistant"]["ocr_engine"]
             raw_batch_size = config.conf["VisionAssistant"].get("ocr_batch_size", 20)
             total_pages = end_page - start_page + 1
             batch_size = total_pages if raw_batch_size == 0 else raw_batch_size
             all_text_parts = []
+            had_error = False
             
             for i in range(start_page, end_page + 1, batch_size):
                 b_end = min(i + batch_size - 1, end_page)
@@ -5592,19 +6481,42 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                 wx.CallAfter(self.report_status, _("Analyzing batch {start}-{end}...").format(start=i+1, end=b_end+1))
                 
                 mime_type = "application/pdf"
-                file_uri = self._upload_file_to_gemini(upload_path, mime_type)
+                p_text = apply_prompt_template(get_prompt_text("ocr_document_translate" if do_translate else "ocr_document_extract"), [("target_lang", target_lang)])
+
+                file_uri = None
+                for attempt in range(3):
+                    file_uri = self._upload_file_to_gemini(upload_path, mime_type, silent=True)
+                    if file_uri:
+                        break
+                    time.sleep(0.5 * (attempt + 1))
+
                 if not file_uri:
                     if os.path.exists(upload_path): os.remove(upload_path)
+                    had_error = True
+                    # Translators: Error message shown when the upload fails.
+                    msg = _("Failed to upload document batch {start}-{end} after multiple attempts.").format(start=i+1, end=b_end+1)
+                    wx.CallAfter(show_error_dialog, msg)
                     continue
 
+                res = None
                 attachments = [{'mime_type': mime_type, 'file_uri': file_uri}]
-                p_text = apply_prompt_template(get_prompt_text("ocr_document_translate" if do_translate else "ocr_document_extract"), [("target_lang", target_lang)])
-                
-                res = AIHandler.call(p_text, attachments=attachments)
+                for attempt in range(3):
+                    res = AIHandler.call(p_text, attachments=attachments)
+                    if res and not res.startswith("ERROR:"):
+                        break
+                    time.sleep(0.5 * (attempt + 1))
+
                 if os.path.exists(upload_path): os.remove(upload_path)
-                
+
                 if res and not res.startswith("ERROR:"):
                     all_text_parts.append(res)
+                else:
+                    had_error = True
+                    # Translators: Error message shown when the connection to the server times out
+                    err_msg = res[6:] if res and res.startswith("ERROR:") else _("Connection Timeout")
+                    # Translators: Error message shown when the AI processing fails.
+                    msg = _("Failed to process document batch {start}-{end}: {error}").format(start=i+1, end=b_end+1, error=err_msg)
+                    wx.CallAfter(show_error_dialog, msg)
             
             wx.CallAfter(setattr, self, 'current_status', _("Idle"))
             if all_text_parts:
@@ -5621,8 +6533,14 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         valid_paths = [p for p in focused_paths if p.lower().endswith(valid_exts)]
         if valid_paths:
             threading.Thread(target=self._scan_and_open, args=(valid_paths,), daemon=True).start()
-        else:
-            wx.CallAfter(self._open_document_reader)
+            return
+        clip_path = self._getClipboardImageFile()
+        if clip_path:
+            # Translators: Status reported when an image found in the clipboard is being processed.
+            self.report_status(_("Processing clipboard image..."))
+            threading.Thread(target=self._scan_and_open, args=([clip_path],), daemon=True).start()
+            return
+        wx.CallAfter(self._open_document_reader)
 
     def _open_doc_chat_dialog(self, init_msg, initial_attachments, doc_text, raw_text_for_save=None, force_show=False, is_recall=False):
         self._last_result_data = (self._open_doc_chat_dialog, (init_msg, initial_attachments, doc_text, raw_text_for_save))
@@ -6157,6 +7075,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
     @scriptHandler.script(description=_("Shows the last AI response in a chat dialog for review or follow-up questions."))
     def script_showLastResult(self, gesture):
         if self.toggling: self.finish()
+        if self.live_session:
+            self._show_live_window()
+            return
         if not self._last_result_data:
             # Translators: Message reported when the user tries to show the last result but none is stored.
             ui.message(_("No previous result to show."))
@@ -6329,13 +7250,15 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     self._operator_history = []
                     # Translators: Status reported when AI starts processing a command
                     wx.CallLater(300, self.report_status, _("Processing..."))
-                    wx.CallLater(800, lambda: threading.Thread(target=self._thread_ai_computer_use, args=(command,), daemon=True).start())
+                    self._operator_thread_token = getattr(self, "_operator_thread_token", 0) + 1
+                    token = self._operator_thread_token
+                    wx.CallLater(800, lambda: threading.Thread(target=self._thread_ai_computer_use, args=(command, token), daemon=True).start())
                 return
             dlg.Destroy()
             gui.mainFrame.postPopup()
         wx.CallAfter(show_cmd_dialog)
 
-    def _thread_ai_computer_use(self, user_command):
+    def _thread_ai_computer_use(self, user_command, token):
         self._abort_operator = False
         self._is_operator_running = True
         try:
@@ -6346,24 +7269,24 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             fg_app = api.getForegroundObject().appModule.appName
             is_gemini = AIHandler.is_gemini()
             for turn in range(max_turns):
-                if getattr(self, "_abort_operator", False):
+                if self._should_abort(token):
                     break
                 
                 if turn > 0:
                     for i in range(35):
-                        if getattr(self, "_abort_operator", False):
+                        if self._should_abort(token):
                             break
                         time.sleep(0.1)
-                    if getattr(self, "_abort_operator", False):
+                    if self._should_abort(token):
                         break
 
                 time.sleep(0.5)
-                if getattr(self, "_abort_operator", False):
+                if self._should_abort(token):
                     break
                 
                 img, w, h, m = self._capture_fullscreen()
                 if not img: break
-                if getattr(self, "_abort_operator", False):
+                if self._should_abort(token):
                     break
                 
                 tones.beep(800, 50)
@@ -6394,12 +7317,13 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     ]})
 
                 res = AIHandler.call(messages, task="operator")
+                
+                if self._should_abort(token):
+                    break
+                
                 if not res or res.startswith("ERROR:"):
                     # Translators: Fallback error message shown in the AI Operator if the server returns an empty or invalid response.
                     wx.CallAfter(show_error_dialog, res[6:] if res else _("AI Error"))
-                    break
-                
-                if getattr(self, "_abort_operator", False):
                     break
                     
                 display_text, is_finished, action_info = self._process_ai_action_logic(res, w, h)
@@ -6409,17 +7333,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                 self._operator_history.append({"role": "user", "content": hist_user})
                 self._operator_history.append({"role": "assistant", "content": res})
                 
-                self._last_result_data = (self._open_operator_chat_dialog, (display_text, {"last_w": w, "last_h": h}))
-                wx.CallAfter(ui.message, clean_markdown(display_text))
+                if not self._should_abort(token):
+                    self._last_result_data = (self._open_operator_chat_dialog, (display_text, {"last_w": w, "last_h": h}))
+                    wx.CallAfter(ui.message, clean_markdown(display_text))
                 
                 if action_info:
-                    if getattr(self, "_abort_operator", False):
+                    if self._should_abort(token):
                         break
                     for i in range(20):
-                        if getattr(self, "_abort_operator", False):
+                        if self._should_abort(token):
                             break
                         time.sleep(0.1)
-                    if getattr(self, "_abort_operator", False):
+                    if self._should_abort(token):
                         break
                         
                     act, rx, ry, txt_val, p_ent = action_info
@@ -6430,21 +7355,24 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     tones.beep(1000, 100)
 
                 if is_finished or ("{" not in res and not action_info):
+                    if self._should_abort(token):
+                        break
                     if config.conf["VisionAssistant"]["copy_to_clipboard"]:
                         api.copyToClip(display_text)
                     if not config.conf["VisionAssistant"]["skip_chat_dialog"]:
                         wx.CallAfter(self._open_operator_chat_dialog, display_text, {"last_w": w, "last_h": h})
                     break
                 
-                if getattr(self, "_abort_operator", False):
+                if self._should_abort(token):
                     break
                 time.sleep(2.5)             
                 current_command = "The action was initiated. Continue if necessary."
         finally:
-            self._is_operator_running = False
-            self._abort_operator = False
-            # Translators: Initial status when the add-on is doing nothing
-            self.current_status = _("Idle")
+            if not self._should_abort(token):
+                self._is_operator_running = False
+                self._abort_operator = False
+                # Translators: Initial status when the add-on is doing nothing
+                self.current_status = _("Idle")
 
     def _open_operator_chat_dialog(self, text, context, force_show=False, is_recall=False):
         self._last_result_data = (self._open_operator_chat_dialog, (text, context))
@@ -6464,7 +7392,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     self._operator_history.append({"role": role, "content": text_val})
             
             wx.CallAfter(self.vision_dlg.Close)
-            threading.Thread(target=self._thread_ai_computer_use, args=(q,), daemon=True).start()
+            self._operator_thread_token = getattr(self, "_operator_thread_token", 0) + 1
+            token = self._operator_thread_token
+            threading.Thread(target=self._thread_ai_computer_use, args=(q, token), daemon=True).start()
             return None, None
 
         if not is_recall:
@@ -6538,7 +7468,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
                 if x is not None and y is not None:
                     real_x, real_y = int(x * sw / 1000), int(y * sh / 1000)
-                    p_ent = action == "type" or t_val.endswith("\n") or "اینتر" in explanation or "enter" in explanation.lower()
+                    p_ent = t_val.endswith("\n") or "اینتر" in explanation or "enter" in explanation.lower()
                     action_info = (action, real_x, real_y, t_val, p_ent)
                 
                 return explanation, is_finished, action_info
@@ -6609,6 +7539,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             time.sleep(0.5)
             winUser.keybd_event(0x0D, 0, 0, 0)
             winUser.keybd_event(0x0D, 0, 2, 0)
+
+    def _should_abort(self, token):
+        return getattr(self, "_abort_operator", False) or token != getattr(self, "_operator_thread_token", 0)
 
     def _getAppId(self, obj):
         try:
@@ -6913,4 +7846,5 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         "kb:shift+a": "aiOperatorAction",
         "kb:l": "labelObject",
         "kb:shift+l": "manageOrScanApp",
+        "kb:control+l": "toggleLiveAssistant",
     }
