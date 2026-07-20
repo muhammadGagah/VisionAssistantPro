@@ -103,6 +103,35 @@ jobs:
         #NVDA #AI #VisionAssistant
         EOF
 
+        MSG_LEN=$(wc -m < tg_msg.txt | awk '{print $1}')
+        if [ "$MSG_LEN" -gt 4000 ]; then
+            awk '/🌟 Support the Future/{flag=1} flag' changelog.md > donate_part.txt
+            sed -i 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' donate_part.txt
+            sed -i 's/\[\([^]]*\)\](\([^)]*\))/<a href="\2">\1<\/a>/g' donate_part.txt
+            sed -i 's/\*\*\([^*]*\)\*\*/<b>\1<\/b>/g' donate_part.txt
+            sed -i 's/\*\([^*]*\)\*/<i>\1<\/i>/g' donate_part.txt
+            sed -i 's/^### \(.*\)/<b>🔹 \1<\/b>/g' donate_part.txt
+            sed -i 's/^\* /• /g' donate_part.txt
+            sed -i 's/`\([^`]*\)`/<code>\1<\/code>/g' donate_part.txt
+            sed -i 's/\*//g' donate_part.txt
+
+            cat << 'EOF' > tg_msg.txt
+        <b>🚀 New Release: Vision Assistant Pro</b>
+
+        <b>Version:</b> <code>${{ github.ref_name }}</code>
+
+        <i>(The changelog is too long for Telegram. Please view the full changelog on GitHub!)</i>
+
+        EOF
+            cat donate_part.txt >> tg_msg.txt
+            cat << 'EOF' >> tg_msg.txt
+
+        <a href="${{ github.event.repository.html_url }}/releases/tag/${{ github.ref_name }}">📦 View and Download on GitHub</a>
+
+        #NVDA #AI #VisionAssistant
+        EOF
+        fi
+
         curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
           --data-urlencode "chat_id=${{ secrets.TELEGRAM_TO }}" \
           --data-urlencode "text@tg_msg.txt" \

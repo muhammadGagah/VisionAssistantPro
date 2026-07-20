@@ -10,6 +10,8 @@ import ctypes
 import re
 import tempfile
 import time
+import shutil
+import zipfile
 import wave
 import gc
 import wx
@@ -62,6 +64,7 @@ import winUser
 import controlTypes
 import comtypes.client
 import nvwave
+import synthDriverHandler
 
 from .prompt_manager_dialog import PromptManagerDialog
 from . import donate_dialog
@@ -241,7 +244,6 @@ class OCRProgressStore:
 
 
 def _is_failed_ocr_page(text):
-
     if not text:
         return True
     stripped = text.strip()
@@ -304,7 +306,8 @@ confspec = {
     "minimax_tts_model": "string(default='speech-2.8-hd')",
     "minimax_tts_voice": "string(default='English_expressive_narrator')",
     "minimax_voices_cache": "string(default='')",
-"minimax_voices_cache_time": "integer(default=0)",
+    "minimax_voices_cache_time": "integer(default=0)",
+    "banned_gemini_keys": "string(default='{}')",
     "custom_api_key": "string(default='')",
     "custom_api_url": "string(default='')",
     "custom_api_type": "string(default='openai')",
@@ -321,12 +324,14 @@ confspec = {
     "custom_tts_voice": "string(default='')",
     "custom_operator_url": "string(default='')",
     "custom_operator_model": "string(default='')",
+    "custom_video_model": "string(default='')",
     "custom_live_model": "string(default='')",
     "advanced_model_routing": "boolean(default=False)",
     "gemini_ocr_model": "string(default='')",
     "gemini_stt_model": "string(default='')",
     "gemini_tts_model": "string(default='')",
     "gemini_operator_model": "string(default='')",
+    "gemini_video_model": "string(default='')",
     "gemini_live_model": "string(default='')",
     "openai_ocr_model": "string(default='')",
     "openai_stt_model": "string(default='')",
@@ -368,6 +373,9 @@ confspec = {
     "live_thinking_level": "string(default='medium')",
     "ocr_engine": "string(default='chrome')",
     "ocr_batch_size": "integer(default=20, min=0, max=100)",
+    "video_srt_chunk_minutes": "integer(default=10, min=0, max=60)",
+    "video_chars_as_subtitle": "boolean(default=True)",
+    "video_add_disclaimer": "boolean(default=True)",
     "tts_voice": "string(default='Puck')"
 }
 
@@ -490,12 +498,123 @@ DEFAULT_SYSTEM_PROMPTS = (
         "key": "video_analysis",
         # Translators: Section header for video analysis prompts in Prompt Manager.
         "section": _("Video"),
-        # Translators: Label for the video content analysis prompt.
-        "label": _("Video Analysis"),
+        # Translators: Label for the general video content analysis prompt.
+        "label": _("General Video Analysis"),
         "prompt": (
             "Analyze this video. Provide a detailed description of the visual content and a "
             "summary of the audio. IMPORTANT: Write the entire response STRICTLY in "
             "{response_lang} language."
+        ),
+    },
+    {
+        "key": "video_character_extraction",
+        "section": "Advanced",
+        "label": "Character Extraction (Pre-pass)",
+        "internal": True,
+        "prompt": (
+            "Analyze the entire video and identify all distinct characters/people who appear or speak. "
+            "Return a strictly valid JSON object.\n\n"
+            "CRITICAL RULES:\n"
+            "1. NO GUESSING OR SPECULATING NAMES: Listen with extreme precision to the dialogue. Pay close attention to exactly how characters address each other. Do not replace native, foreign, or local names with common generic names unless that is the exact phonetical name spoken in the audio. If you are not 100% sure of a person's name from the audio track, DO NOT invent or speculate a name. Instead, use a highly detailed physical description as a placeholder name.\n"
+            "2. THIRD-PARTY MENTIONS (CRITICAL): People often talk about others who are not present. If a name is spoken in the dialogue, DO NOT automatically assign it to one of the speakers or someone on screen. A name should ONLY be assigned if a character introduces themselves (e.g., 'I am David') or is explicitly addressed by another (e.g., 'How are you, David?').\n"
+            "3. DO NOT USE FACIAL RECOGNITION FOR NAMES: Under no circumstances should you guess a character's name based on the actor's real-world face. Only use names heard clearly in the audio.\n"
+            "4. CHARACTER RELATIONSHIPS: Listen to verbal context to establish clear relationships (such as family ties or professional roles). Include these verified relationships in their description field.\n"
+            "5. FACIAL FEATURES ARE PRIMARY: Clothing can change, so you MUST prioritize describing immutable facial features (e.g., eye shape, nose, jawline, skin tone, facial expressions) and other physical traits (hair color/style, age group, build). Make the face the main identifying factor.\n"
+            "6. DO NOT TRANSLATE JSON KEYS. The keys 'characters', 'name', and 'description' MUST remain in English. Only translate the values into {response_lang}.\n"
+            "7. Output format MUST be valid JSON matching this template:\n"
+            "{\n"
+            "  \"characters\": [\n"
+            "    {\n"
+            "      \"name\": \"Character Name (or descriptive placeholder if name is unverified)\",\n"
+            "      \"description\": \"Detailed facial features, physical traits, and verified relationships.\"\n"
+            "    }\n"
+            "  ]\n"
+            "}\n"
+        )
+    },
+    {
+        "key": "video_segment_instruction",
+        "section": "Advanced",
+        "label": "Video Segment Instruction",
+        "internal": True,
+        "prompt": (
+            "CRITICAL TIME-SEGMENT INSTRUCTION:\n"
+            "1. You MUST ONLY analyze the video segment starting exactly at {start_str} and ending at {end_str}.\n"
+            "2. Your timestamps MUST be ABSOLUTE, continuing from {start_str} up to {end_str}.\n"
+            "3. DO NOT stop early. You MUST provide detailed descriptions until you reach {end_str}.\n"
+            "4. Do NOT summarize or add fake end credits."
+        ),
+    },
+    {
+        "key": "video_previous_context",
+        # Translators: Section header for advanced/internal prompts.
+        "section": "Advanced",
+        # Translators: Label for the prompt that feeds the previous video segment's context to the AI.
+        "label": "Video Previous Segment Context",
+        "internal": True,
+        "prompt": (
+            "PREVIOUS SEGMENT DESCRIPTIONS (for context only — do NOT repeat these):\n"
+            "{prev_descriptions}\n\n"
+            "You MUST continue describing from where the previous segment ended. "
+            "Do NOT re-describe events, scenes, or characters already covered above."
+        ),
+    },
+    {
+        "key": "video_audio_description",
+        # Translators: Section header for video analysis prompts in Prompt Manager.
+        "section": _("Video"),
+        # Translators: Label for the Audio Description (SRT) generation prompt.
+        "label": _("Audio Description Generation (SRT)"),
+        "prompt": (
+            "You are an expert Audio Describer creating accessible descriptions for a blind audience. "
+            "Analyze this video segment and generate an audio description script strictly in JSON format.\n\n"
+            "CRITICAL CHARACTER VERIFICATION & TEMPORAL ALIGNMENT RULES:\n"
+            "1. STRICT CHARACTER VERIFICATION: You MUST strictly adhere to the GLOBAL CHARACTER DICTIONARY provided above. "
+            "DO NOT lazily assume a character's identity based on the previous shot or subsequent events in the segment. "
+            "Whenever a character enters the scene, you MUST cross-reference their specific facial features and visual traits against the dictionary before naming them.\n"
+            "2. NO PRE-EMPTIVE NAMING (NO FUTURE LEAKING): Do NOT use a character's name in any description before the exact timestamp where they physically enter the screen. "
+            "If a character only appears at 00:06:00, their name must never be mentioned at 00:01:00, even if the person visible at 00:01:00 shares a similar clothing color, hair color, or gender. "
+            "Prioritize immutable facial structures (eyes, nose, jawline, age) over variable elements like clothing.\n"
+            "3. NO GHOST MAPPING: If a character from the dictionary is not actively and clearly visible in this specific segment, "
+            "do NOT force or assign their name to a random extra, background person, or different actor. "
+            "It is completely normal if some characters from the dictionary do not appear in this segment.\n"
+            "4. DEFAULT TO VISUAL DESCRIPTION: If a person appears on screen but you are not 100% sure they are a specific character from the dictionary, "
+            "do NOT use any of the dictionary names. Instead, describe them objectively by their visual appearance (e.g., 'a man with short brown hair', 'a young female student with glasses').\n"
+            "5. NO DIALOGUE-BASED GUESSING & THIRD-PARTY MENTIONS: Characters frequently talk about people who are off-screen or absent. Do not label a visible person with a name from the dictionary just because you hear that name spoken in the background audio track, "
+            "unless you visually verify they match the dictionary's physical description.\n\n"
+            "BLIND ACCESSIBILITY & PRECISION RULES:\n"
+            "- Focus on describing visual actions, emotions, and settings vividly. Paint a clear mental image for someone who cannot see.\n"
+            "- STRICT OCR FOR ON-SCREEN TEXT: If there is ANY text visible on screen (e.g., phone screens, letters, signs, title cards, subtitles, and even long scrolling end credits), you MUST quote it VERBATIM. DO NOT summarize, omit, or truncate the text. Write exactly what is written. For example, instead of saying 'the title of the movie appears', you MUST write 'Text on screen reads: [Exact Text]'. Strict verbatim quoting is mandatory for all text without exception.\n"
+            "- TIMELINE PRECISION: You MUST cover the ENTIRE duration of this video segment continuously, all the way to the very last second. Do NOT stop early.\n"
+            "- SMART AUDIO TIMING (NATURAL GAPS): Listen to the audio carefully. Whenever possible, set the 'start' and 'end' timestamps of your descriptions during natural gaps where no one is speaking (e.g., silence, non-vocal background music, or ambient noise). Anchor your description to these gaps to avoid overlapping with dialogue.\n"
+            "- DO NOT COMPROMISE DESCRIPTION QUALITY: You are strictly forbidden from omitting or truncating important visual details just to fit into a short audio gap. If a description requires more time than the available gap, extend the timestamp even if it overlaps with dialogue, but always try to anchor the start time to a natural pause.\n"
+            "- Output 'start' and 'end' values strictly using 'HH:MM:SS' clock format (e.g., '00:02:05'). Sync timestamps perfectly with visual events.\n"
+            "- NO DIALOGUE TRANSCRIPTION: Do not transcribe or summarize the spoken conversations. Focus strictly on visual actions.\n"
+            "- Language: Write entirely in {response_lang}.\n\n"
+            "OUTPUT FORMAT:\n"
+            "Your output MUST be a valid JSON object exactly matching this structure:\n"
+            "{\n"
+            "  \"descriptions\": [\n"
+            "    {\n"
+            "      \"start\": \"00:01:20\",\n"
+            "      \"end\": \"00:01:25\",\n"
+            "      \"label\": \"Detailed scene description...\"\n"
+            "    }\n"
+            "  ]\n"
+            "}"
+        ),
+    },
+    {
+        "key": "local_video_recording",
+        # Translators: Section header for video analysis prompts in Prompt Manager.
+        "section": _("Video"),
+        # Translators: Label for the local video recording analysis prompt.
+        "label": _("Local Video Recording Analysis"),
+        "prompt": (
+            "Analyze this recorded silent video from the user's screen. Describe the scene, layout, actions, "
+            "and any visible text in high detail. If it is a movie, an animation, or a tutorial, describe the events, "
+            "characters, and environment thoroughly. Focus on accessibility and paint a clear picture. "
+            "IMPORTANT: Write the entire response STRICTLY in {response_lang} language."
         ),
     },
     {
@@ -703,6 +822,8 @@ PROMPT_VARIABLES_GUIDE = (
     ("[selection]", _("Currently selected text"), _("Text")),
     # Translators: Description for the [clipboard] variable in the Variables Guide.
     ("[clipboard]", _("Clipboard content"), _("Text")),
+    # Translators: Description for the [clipboard_image] variable in the Variables Guide.
+    ("[clipboard_image]", _("Image currently in clipboard"), _("Image")),
     # Translators: Description and input type for the [screen_obj] variable in the Variables Guide.
     ("[screen_obj]", _("Screenshot of the navigator object"), _("Image")),
     # Translators: Description for the [screen_full] variable in the Variables Guide.
@@ -715,6 +836,16 @@ PROMPT_VARIABLES_GUIDE = (
     ("[file_read]", _("Select document for reading"), _("TXT, Code, PDF")),
     # Translators: Description and input type for the [file_audio] variable in the Variables Guide.
     ("[file_audio]", _("Select audio file for analysis"), _("MP3, WAV, OGG")),
+    # Translators: Description for the {target_lang} variable in the Variables Guide.
+    ("{target_lang}", _("Current target language"), _("Text")),
+    # Translators: Description for the {source_lang} variable in the Variables Guide.
+    ("{source_lang}", _("Current source language"), _("Text")),
+    # Translators: Description for the {response_lang} variable in the Variables Guide.
+    ("{response_lang}", _("Current AI response language"), _("Text")),
+    # Translators: Description for the {swap_target} variable in the Variables Guide.
+    ("{swap_target}", _("Fallback language for translation"), _("Text")),
+    # Translators: Description for the {swap_instruction} variable in the Variables Guide.
+    ("{swap_instruction}", _("Smart swap translation instruction"), _("Text")),
 )
 
 # --- Helpers ---
@@ -856,7 +987,7 @@ def load_default_prompt_overrides():
         log.warning(f"Invalid default_refine_prompts config, using built-ins: {e}")
         return {}
 
-    overrides, _ = _sanitize_default_prompt_overrides(data)
+    overrides, _dummy = _sanitize_default_prompt_overrides(data)
     return overrides
 
 def get_configured_default_prompt_map():
@@ -949,6 +1080,165 @@ def clean_markdown(text):
     text = re.sub(r'^\s*-\s+', '', text, flags=re.MULTILINE)
     return text.strip()
 
+
+def convert_json_to_srt_string(json_text, chunk_size=1200, segments=None, global_chars=None):
+    def parse_seconds(ts):
+        ts_str = str(ts).strip()
+        total_seconds = 0.0
+        if re.match(r'^\d+(?:[.,]\d+)?$', ts_str):
+            try:
+                total_seconds = float(ts_str.replace(',', '.'))
+            except Exception:
+                pass
+        else:
+            ts_clean = ts_str.replace('.', ',')
+            main_time = ts_clean.split(',', 1)[0]
+            parts = main_time.split(':')
+            try:
+                if len(parts) == 2:
+                    total_seconds = float(int(parts[0]) * 60 + int(parts[1]))
+                elif len(parts) == 3:
+                    total_seconds = float(int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]))
+            except Exception:
+                pass
+        return total_seconds
+
+    def format_srt_time(total_seconds):
+        if total_seconds < 0:
+            total_seconds = 0.0
+        h = int(total_seconds // 3600)
+        m = int((total_seconds % 3600) // 60)
+        s = int(total_seconds % 60)
+        ms = int(round((total_seconds - int(total_seconds)) * 1000))
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    def normalize_timestamp(ts, seg_window=None):
+        total_seconds = parse_seconds(ts)
+        if seg_window is not None:
+            seg_start, seg_end = seg_window
+            if total_seconds < seg_start:
+                if total_seconds < (seg_end - seg_start + 10):
+                    total_seconds += seg_start
+                else:
+                    total_seconds = seg_start
+            if total_seconds > seg_end and seg_end > 0:
+                total_seconds = seg_end
+        return format_srt_time(total_seconds)
+
+    if isinstance(json_text, list):
+        chunks = json_text
+    else:
+        chunks = [json_text]
+
+    srt_content = ""
+    counter = 1
+    is_first_subtitle = True
+
+    for chunk_idx, raw_chunk in enumerate(chunks):
+        seg_window = None
+        if segments and chunk_idx < len(segments):
+            sw = segments[chunk_idx]
+            if sw and sw[1] is not None and sw[1] > sw[0] >= 0:
+                seg_window = sw
+        clean_text = raw_chunk.strip()
+        
+        if "```json" in clean_text.lower():
+            try:
+                clean_text = re.split(r'```json', clean_text, flags=re.IGNORECASE)[1].split("```")[0].strip()
+            except Exception: pass
+        elif "```srt" in clean_text.lower():
+            try:
+                clean_text = re.split(r'```srt', clean_text, flags=re.IGNORECASE)[1].split("```")[0].strip()
+            except Exception: pass
+        elif "```" in clean_text:
+            try:
+                clean_text = clean_text.split("```")[1].split("```")[0].strip()
+            except Exception: pass
+
+        try:
+            data = json.loads(clean_text)
+            descriptions = []
+            if isinstance(data, list):
+                descriptions = data
+            elif isinstance(data, dict):
+                descriptions = data.get("descriptions", data.get("descriptions_list", []))
+            
+            for desc in descriptions:
+                start_val = desc.get("start")
+                end_val = desc.get("end")
+                text = desc.get("label", desc.get("text", "")).strip()
+                
+                if not text:
+                    continue
+                    
+                start = normalize_timestamp(start_val, seg_window)
+                end = normalize_timestamp(end_val, seg_window)
+                
+                if start == "00:00:00,000" and end == "00:00:00,000":
+                    continue
+                
+                if is_first_subtitle and global_chars:
+                    text = f"{global_chars.strip()}\n{text}"
+                    is_first_subtitle = False
+                    
+                srt_content += f"{counter}\n{start} --> {end}\n{text}\n\n"
+                counter += 1
+                
+        except Exception:
+            blocks = re.findall(r'\{[^{}]*?"start"\s*:[^{}]*?\}', clean_text, re.DOTALL|re.IGNORECASE)
+            if blocks:
+                for block in blocks:
+                    start_m = re.search(r'"start"\s*:\s*"([^"]+)"', block, re.IGNORECASE)
+                    end_m = re.search(r'"end"\s*:\s*"([^"]+)"', block, re.IGNORECASE)
+                    
+                    label_m = re.search(r'"(?:label|text)"\s*:\s*"(.*?)"\s*(?:,|})', block, re.IGNORECASE | re.DOTALL)
+                    
+                    if start_m and end_m and label_m:
+                        start_val = start_m.group(1)
+                        end_val = end_m.group(1)
+                        text = label_m.group(1).strip().replace('\\"', '"')
+                        
+                        start = normalize_timestamp(start_val, seg_window)
+                        end = normalize_timestamp(end_val, seg_window)
+                        
+                        if start == "00:00:00,000" and end == "00:00:00,000":
+                            continue
+                        
+                        if is_first_subtitle and global_chars:
+                            text = f"{global_chars.strip()}\n{text}"
+                            is_first_subtitle = False
+                            
+                        srt_content += f"{counter}\n{start} --> {end}\n{text}\n\n"
+                        counter += 1
+            else:
+                pattern = r'\[(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(.*)'
+                matches = re.finditer(pattern, clean_text)
+                for match in matches:
+                    start_time = normalize_timestamp(match.group(1), seg_window)
+                    end_time = normalize_timestamp(match.group(2), seg_window)
+                    desc_text = match.group(3).strip()
+                    
+                    if desc_text:
+                        if is_first_subtitle and global_chars:
+                            desc_text = f"{global_chars.strip()}\n\n{desc_text}"
+                            is_first_subtitle = False
+                        srt_content += f"{counter}\n{start_time} --> {end_time}\n{desc_text}\n\n"
+                        counter += 1
+
+    if srt_content:
+        return srt_content
+        
+    fallback_text = chunks[0].strip()
+    if fallback_text.startswith("```json"):
+        fallback_text = fallback_text[7:]
+    if fallback_text.endswith("```"):
+        fallback_text = fallback_text[:-3]
+        
+    if global_chars:
+        fallback_text = f"{global_chars.strip()}\n\n{fallback_text}"
+        
+    return f"1\n00:00:00,000 --> 00:00:05,000\n{fallback_text.strip()}\n\n"
+
 def strip_thinking_tags(text):
     if not text: return ""
     text = re.sub(r'\s*<think>.*?</think>\s*', '\n\n', text, flags=re.DOTALL | re.IGNORECASE)
@@ -1014,7 +1304,7 @@ def get_mime_type(path):
     if ext == '.png': return 'image/png'
     if ext == '.webp': return 'image/webp'
     if ext in ['.tif', '.tiff']: return 'image/jpeg'
-    if ext in ['.heic', '.heif']: return 'image/heic' # <--- این خط اضافه شود
+    if ext in ['.heic', '.heif']: return 'image/heic'
     if ext == '.mp3': return 'audio/mpeg'
     if ext == '.wav': return 'audio/wav'
     if ext == '.ogg': return 'audio/ogg'
@@ -1142,7 +1432,7 @@ def get_instagram_download_link(insta_url):
             "locale": "en",
             "_token": csrf_token,
             "link": insta_url,
-            "p": "p"  # تغییر به p بر اساس شیوه جدید وب‌سایت
+            "p": "p"
         }
         data = urlencode(payload).encode('utf-8')
         
@@ -1189,18 +1479,49 @@ def get_tiktok_download_link(tiktok_url):
         log.error(f"TikTok download extraction failed: {e}")
     return None
 
-def _download_temp_video(url):
+def get_youtube_duration(url):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        opener = get_proxy_opener()
+        req = request.Request(url, headers=headers)
+        with opener.open(req, timeout=15) as res:
+            html = res.read().decode('utf-8', 'ignore')
+            
+        m = re.search(r'"lengthSeconds":"(\d+)"', html)
+        if not m:
+            m = re.search(r'lengthSeconds[^\d]+(\d+)', html)
+        if m:
+            return float(m.group(1))
+            
+        m = re.search(r'"approxDurationMs":"(\d+)"', html)
+        if not m:
+            m = re.search(r'approxDurationMs[^\d]+(\d+)', html)
+        if m:
+            return float(m.group(1)) / 1000.0
+    except Exception as e:
+        log.error(f"YouTube duration fetch failed: {e}")
+    return None
+
+def _download_temp_video(url, abort_checker=None):
     try:
         req = request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with request.urlopen(req, timeout=120) as response:
+        with request.urlopen(req, timeout=600) as response:
             fd, path = tempfile.mkstemp(suffix=".mp4")
             os.close(fd)
             try:
                 with open(path, 'wb') as f:
                     while True:
+                        if abort_checker and abort_checker(): break
                         chunk = response.read(8192)
                         if not chunk: break
                         f.write(chunk)
+                if abort_checker and abort_checker():
+                    try: os.remove(path)
+                    except Exception: pass
+                    return None
                 return path
             except Exception as e:
                 log.error(f"Error writing temp video: {e}")
@@ -1212,12 +1533,163 @@ def _download_temp_video(url):
         log.error(f"Error downloading temp video: {e}")
     return None
 
-def get_file_path(title, wildcard, mode="open", multiple=False):
+
+class _LocalVideoSource:
+
+    is_direct = False
+
+    def __init__(self, path):
+        self.path = path
+        # Translators: Error message shown when processing a local video file fails.
+        self.error_message = _("Error processing local video.")
+        self.log_label = "Local video thread failed"
+        self._compressed_path = None
+
+    def prepare(self, report, abort_check):
+        return True
+
+    def ensure_local(self, owner, report, abort_check):
+        if self._compressed_path and os.path.exists(self._compressed_path):
+            return self._compressed_path
+        # Translators: Status message when compressing a local video file before uploading.
+        report(_("Compressing video (this may take a moment)..."))
+        self._compressed_path = owner._compress_video(self.path)
+        if not self._compressed_path:
+            # Translators: Error message shown when video compression fails or is cancelled by the user.
+            report(_("Error: Video compression failed or was cancelled."))
+            return None
+        return self._compressed_path
+
+    def duration(self, file_uri):
+        return getattr(GeminiHandler, '_file_durations', {}).get(file_uri)
+
+    def cleanup(self):
+        cp = self._compressed_path
+        if cp and cp != self.path and os.path.exists(cp):
+            try: os.remove(cp)
+            except Exception: pass
+
+
+class _DownloadVideoSource:
+
+    is_direct = False
+
+    def __init__(self, url, platform):
+        self.url = url
+        self.platform = platform
+        # Translators: Error message shown when processing an online video fails.
+        self.error_message = _("Error processing video.")
+        self.log_label = "Online video analysis thread failed"
+        self._direct_link = None
+        self._temp_path = None
+
+    def prepare(self, report, abort_check):
+        # Translators: Message reported when the add-on starts processing an online video link.
+        report(_("Processing Video..."))
+        return True
+
+    def _extract_link(self, report):
+        if self.platform == "instagram":
+            link = get_instagram_download_link(self.url)
+            # Translators: Error message when the add-on fails to get a direct download link for an Instagram video.
+            err = _("Error: Could not extract Instagram video.")
+        elif self.platform == "twitter":
+            link = get_twitter_download_link(self.url)
+            # Translators: Error message when the add-on fails to get a direct download link for a Twitter/X video.
+            err = _("Error: Could not extract Twitter video.")
+        else:
+            link = get_tiktok_download_link(self.url)
+            # Translators: Error message when the add-on fails to get a direct download link for a TikTok video.
+            err = _("Error: Could not extract TikTok video.")
+        if not link:
+            log.error(f"Video direct link extraction failed for: {self.url}")
+            report(err)
+        return link
+
+    def ensure_local(self, owner, report, abort_check):
+        if self._temp_path and os.path.exists(self._temp_path):
+            return self._temp_path
+        if abort_check(): return None
+        if not self._direct_link:
+            self._direct_link = self._extract_link(report)
+            if not self._direct_link:
+                return None
+        if abort_check(): return None
+        # Translators: Message reported when the add-on is downloading the video from the extracted link.
+        report(_("Downloading Video..."))
+        self._temp_path = _download_temp_video(self._direct_link, abort_checker=abort_check)
+        if not self._temp_path:
+            log.error(f"Video download failed for link: {self._direct_link}")
+            # Translators: Error message when downloading the online video fails.
+            report(_("Error: Download failed."))
+            return None
+        return self._temp_path
+
+    def duration(self, file_uri):
+        return getattr(GeminiHandler, '_file_durations', {}).get(file_uri)
+
+    def cleanup(self):
+        if self._temp_path and os.path.exists(self._temp_path):
+            try: os.remove(self._temp_path)
+            except Exception: pass
+
+
+class _YouTubeVideoSource:
+
+    is_direct = True
+
+    def __init__(self, url):
+        self.url = url
+        self.error_message = _("Error processing video.")
+        self.log_label = "Online video analysis thread failed"
+
+    @property
+    def direct_uri(self):
+        return self.url
+
+    def prepare(self, report, abort_check):
+        # Translators: Message reported when the add-on starts processing an online video link.
+        report(_("Processing Video..."))
+        return True
+
+    def ensure_local(self, owner, report, abort_check):
+        return None
+
+    def duration(self, file_uri):
+        return get_youtube_duration(self.url)
+
+    def cleanup(self):
+        pass
+
+
+class _InvalidVideoSource:
+    is_direct = False
+
+    def __init__(self, message):
+        self.message = message
+        self.error_message = message
+        self.log_label = "Online video analysis thread failed"
+
+    def prepare(self, report, abort_check):
+        report(self.message)
+        return False
+
+    def ensure_local(self, owner, report, abort_check):
+        return None
+
+    def duration(self, file_uri):
+        return None
+
+    def cleanup(self):
+        pass
+
+
+def get_file_path(title, wildcard, mode="open", multiple=False, default_name=""):
     style = wx.FD_OPEN | wx.FD_FILE_MUST_EXIST if mode == "open" else wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
     if multiple: style |= wx.FD_MULTIPLE
     gui.mainFrame.prePopup()
     try:
-        with wx.FileDialog(gui.mainFrame, title, wildcard=wildcard, style=style) as dlg:
+        with wx.FileDialog(gui.mainFrame, title, wildcard=wildcard, style=style, defaultFile=default_name) as dlg:
             if dlg.ShowModal() == wx.ID_OK:
                 return dlg.GetPaths() if multiple else dlg.GetPath()
     finally:
@@ -1371,10 +1843,88 @@ class GoogleTranslator:
 class GeminiHandler:
     _working_key_idx = 0 
     _file_uri_keys = {}
-    _max_retries = 5
+    _max_retries = 10
 
     @staticmethod
-    def _get_api_keys():
+    def _get_current_model_for_ban(task=None):
+        p = config.conf["VisionAssistant"]["active_provider"]
+        if p == "custom":
+            return config.conf["VisionAssistant"].get("custom_model_name", "default").strip()
+            
+        model = config.conf["VisionAssistant"].get("model_name", "gemini-1.5-flash").strip()
+        if not model: model = "gemini-1.5-flash"
+        
+        adv_routing = config.conf["VisionAssistant"].get("advanced_model_routing", False)
+        if adv_routing and task:
+            adv = ""
+            if task == "video":
+                adv = config.conf["VisionAssistant"].get("gemini_video_model", "").strip()
+            elif task == "ocr":
+                adv = config.conf["VisionAssistant"].get("gemini_ocr_model", "").strip()
+            elif task == "stt":
+                adv = config.conf["VisionAssistant"].get("gemini_stt_model", "").strip()
+            elif task == "tts":
+                adv = config.conf["VisionAssistant"].get("gemini_tts_model", "").strip()
+            elif task == "operator":
+                adv = config.conf["VisionAssistant"].get("gemini_operator_model", "").strip()
+            elif task == "live":
+                adv = config.conf["VisionAssistant"].get("gemini_live_model", "").strip()
+                
+            if adv and "Default" not in adv and "Auto" not in adv:
+                model = adv
+                
+        return model
+
+    @staticmethod
+    def _is_key_banned(key, model=None, task=None):
+        banned_str = config.conf["VisionAssistant"].get("banned_gemini_keys", "{}")
+        try:
+            banned = json.loads(banned_str)
+        except Exception:
+            banned = {}
+            
+        if model is None:
+            model = GeminiHandler._get_current_model_for_ban(task=task)
+        key_model = f"{key}::{model}"
+            
+        ban_time = banned.get(key_model)
+        if not ban_time: return False
+        
+        if time.time() < ban_time:
+            return True
+            
+        del banned[key_model]
+        config.conf["VisionAssistant"]["banned_gemini_keys"] = json.dumps(banned)
+        return False
+
+    @staticmethod
+    def _ban_key(key, minutes=None, model=None):
+        banned_str = config.conf["VisionAssistant"].get("banned_gemini_keys", "{}")
+        try:
+            banned = json.loads(banned_str)
+        except Exception:
+            banned = {}
+            
+        now = time.time()
+        if minutes is not None:
+            reset_ts = now + (minutes * 60)
+        else:
+            gm = time.gmtime(now)
+            seconds_since_midnight = gm.tm_hour * 3600 + gm.tm_min * 60 + gm.tm_sec
+            midnight_utc = now - seconds_since_midnight
+            reset_ts = midnight_utc + 8 * 3600
+            if now >= reset_ts:
+                reset_ts += 24 * 3600
+            
+        if model is None:
+            model = GeminiHandler._get_current_model_for_ban()
+        key_model = f"{key}::{model}"
+            
+        banned[key_model] = reset_ts
+        config.conf["VisionAssistant"]["banned_gemini_keys"] = json.dumps(banned)
+
+    @staticmethod
+    def _get_api_keys(task=None):
         p = config.conf["VisionAssistant"]["active_provider"]
         raw = config.conf["VisionAssistant"]["api_key"]
         if p == "custom" and config.conf["VisionAssistant"]["custom_api_type"] == "gemini":
@@ -1383,7 +1933,9 @@ class GeminiHandler:
         keys = [k.strip() for k in clean_raw.split(',') if k.strip()]
         if not keys and p == "custom":
             keys = [""]
-        return keys
+            
+        available_keys = [k for k in keys if not GeminiHandler._is_key_banned(k, task=task)]
+        return available_keys
 
     @staticmethod
     def _get_opener(url=None):
@@ -1391,21 +1943,61 @@ class GeminiHandler:
 
     @staticmethod
     def _handle_error(e):
-        server_msg = None
+        server_msg = getattr(e, 'parsed_msg', None)
+        retry_delay = getattr(e, 'retry_delay', None)
+        is_daily_quota = getattr(e, 'is_daily', False)
+        
+        if server_msg is not None:
+            return server_msg
+            
         if hasattr(e, 'read'):
             try:
-                raw_err = e.read().decode('utf-8')
+                if not hasattr(e, '_cached_raw_err'):
+                    e._cached_raw_err = e.read().decode('utf-8')
+                raw_err = e._cached_raw_err
+                
+                log.error(f"RAW API ERROR RESPONSE: {raw_err}")
                 if raw_err:
                     err_json = json.loads(raw_err)
                     err_val = err_json.get("error")
                     if isinstance(err_val, dict):
                         server_msg = err_val.get("message")
+                        
+                        details = err_val.get("details", [])
+                        for item in details:
+                            if not isinstance(item, dict):
+                                continue
+                            
+                            if "RetryInfo" in str(item.get("@type", "")):
+                                delay_str = item.get("retryDelay", "")
+                                if delay_str and delay_str.endswith("s"):
+                                    try:
+                                        retry_delay = float(delay_str[:-1])
+                                    except Exception:
+                                        pass
+                            
+                            elif "QuotaFailure" in str(item.get("@type", "")):
+                                violations = item.get("violations", [])
+                                for viol in violations:
+                                    if isinstance(viol, dict):
+                                        q_id = str(viol.get("quotaId", "")).lower()
+                                        if any(x in q_id for x in ["perday", "requestsperday", "daily"]):
+                                            is_daily_quota = True
                     else:
                         server_msg = err_val or err_json.get("message")
-            except Exception:
-                pass
+            except Exception as ex:
+                log.error(f"Failed to parse raw error: {ex}")
+                
         if server_msg:
+            if is_daily_quota and "requestsperday" not in server_msg.lower():
+                # Translators: Note appended to the API error message when the daily RequestsPerDay quota limit is reached.
+                server_msg += _(" (RequestsPerDay quota exceeded)")
+            e.parsed_msg = server_msg
+            e.is_daily = is_daily_quota
+            if retry_delay is not None:
+                e.retry_delay = retry_delay
             return server_msg
+            
         if hasattr(e, 'code'):
             # Translators: Error message for Bad Request (400)
             if e.code == 400: return _("Error 400: Bad Request (Check API Key)")
@@ -1413,33 +2005,72 @@ class GeminiHandler:
             if e.code == 403: return _("Error 403: Forbidden (Check Region)")
             if e.code == 429: return "QUOTA_EXCEEDED"
             if e.code >= 500: return "SERVER_ERROR"
+            
         return str(e)
 
     @staticmethod
-    def _call_with_retry(func_logic, key, *args):
+    def _call_with_retry(func_logic, key, *args, max_retries=None):
+        if max_retries is None:
+            max_retries = GeminiHandler._max_retries
         last_exc = None
-        for attempt in range(GeminiHandler._max_retries):
+        for attempt in range(max_retries):
             try:
                 return func_logic(key, *args)
             except error.HTTPError as e:
                 err_msg = GeminiHandler._handle_error(e)
+                err_msg_lower = err_msg.lower()
+                e.parsed_msg = err_msg
                 
                 is_retryable = False
-                if hasattr(e, 'code'):
-                    if e.code == 429 or e.code >= 500:
-                        is_retryable = True
-                
-                err_msg_lower = err_msg.lower()
-                if "high demand" in err_msg_lower or "quota" in err_msg_lower or "exhausted" in err_msg_lower:
+                if hasattr(e, 'code') and e.code >= 500:
                     is_retryable = True
                 
+                if hasattr(e, 'code') and e.code == 429:
+                    used_model = None
+                    if hasattr(e, 'url') and e.url and "/models/" in e.url:
+                        used_model = e.url.split("/models/")[-1].split(":")[0].split("?")[0]
+                        
+                    if any(x in err_msg_lower for x in ["daily", "per day", "per_day", "perday", "requestsperday"]):
+                        GeminiHandler._ban_key(key, model=used_model)
+                        is_retryable = False
+                    else:
+                        is_retryable = True
+                elif "high demand" in err_msg_lower or "exhausted" in err_msg_lower or "quota" in err_msg_lower:
+                    used_model = None
+                    if hasattr(e, 'url') and e.url and "/models/" in e.url:
+                        used_model = e.url.split("/models/")[-1].split(":")[0].split("?")[0]
+                        
+                    if not any(x in err_msg_lower for x in ["daily", "per day", "per_day", "perday", "requestsperday"]):
+                        is_retryable = True
+                    else:
+                        GeminiHandler._ban_key(key, model=used_model)
+                        
+                delay_sec = getattr(e, 'retry_delay', None)
+                if delay_sec is None:
+                    match = re.search(r"retry in ([\d\.]+)s", err_msg_lower)
+                    if match:
+                        try: delay_sec = float(match.group(1))
+                        except Exception: pass
+                        
+                if delay_sec is not None and delay_sec > 0 and is_retryable:
+                    n_keys = len(GeminiHandler._get_api_keys())
+                    if n_keys > 1:
+                        is_retryable = False
+                    else:
+                        if attempt == 0:
+                            time.sleep(delay_sec + 0.5)
+                            continue
+                        else:
+                            is_retryable = False
+                
                 if not is_retryable:
-                    raise
+                    raise e
                     
                 last_exc = e
             except error.URLError as e:
                 last_exc = e
-            if attempt < GeminiHandler._max_retries - 1:
+                
+            if attempt < max_retries - 1:
                 time.sleep(1.0 * (attempt + 1))
         raise last_exc
 
@@ -1457,11 +2088,11 @@ class GeminiHandler:
         return GeminiHandler._file_uri_keys.get(uri)
 
     @staticmethod
-    def _call_with_key(func_logic, key, *args):
+    def _call_with_key(func_logic, key, *args, max_retries=None):
         try:
-            return GeminiHandler._call_with_retry(func_logic, key, *args)
+            return GeminiHandler._call_with_retry(func_logic, key, *args, max_retries=max_retries)
         except error.HTTPError as e:
-            err_msg = GeminiHandler._handle_error(e)
+            err_msg = getattr(e, 'parsed_msg', GeminiHandler._handle_error(e))
             if err_msg == "QUOTA_EXCEEDED":
                 # Translators: Message of a dialog which may pop up while performing an AI call
                 err_msg = _("Error 429: Quota Exceeded (Try later)")
@@ -1492,7 +2123,18 @@ class GeminiHandler:
             if attachments:
                 for att in attachments:
                     if 'file_uri' in att:
-                        parts.append({"file_data": {"mime_type": att['mime_type'], "file_uri": att['file_uri']}})
+                        fd_part = {
+                            "fileData": {
+                                "mimeType": att['mime_type'],
+                                "fileUri": att['file_uri']
+                            }
+                        }
+                        if att.get('video_metadata'):
+                            fd_part['videoMetadata'] = {
+                                "startOffset": att['video_metadata'].get('start_offset'),
+                                "endOffset": att['video_metadata'].get('end_offset')
+                            }
+                        parts.append(fd_part)
                     elif 'data' in att:
                         parts.append({"inline_data": {"mime_type": att['mime_type'], "data": att['data']}})
             if prompt: parts.append({"text": prompt})
@@ -1516,9 +2158,51 @@ class GeminiHandler:
         _apply_gemma_thinking_patch(payload, base_endpoint)
             
         headers = {"Content-Type": "application/json"}
+
+        if task == "video" and ":generateContent" in base_endpoint:
+            stream_endpoint = base_endpoint.replace(":generateContent", ":streamGenerateContent")
+            s_connector = "&" if "?" in stream_endpoint else "?"
+            stream_url = f"{stream_endpoint}{s_connector}alt=sse&key={key}"
+            req = request.Request(stream_url, data=json.dumps(payload).encode('utf-8'), headers=headers)
+
+            collected = []
+            block_reason = None
+            safety_blocked = False
+            with GeminiHandler._get_opener(stream_url).open(req, timeout=600) as r:
+                for raw_line in r:
+                    line = raw_line.decode('utf-8', 'ignore').strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    chunk = line[5:].strip()
+                    if not chunk or chunk == "[DONE]":
+                        continue
+                    try:
+                        obj = json.loads(chunk)
+                    except Exception:
+                        continue
+                    pf = obj.get('promptFeedback')
+                    if pf and pf.get('blockReason'):
+                        block_reason = pf['blockReason']
+                    for cand in obj.get('candidates', []):
+                        if cand.get('finishReason') == "SAFETY":
+                            safety_blocked = True
+                        collected.append(_extract_text_from_parts(cand.get('content', {}).get('parts', [])))
+
+            text = "".join(collected)
+            if text:
+                return text
+            if block_reason:
+                # Translators: Error prefix shown when the AI response is blocked by safety filters.
+                return "ERROR:" + _("Blocked by AI Safety Filters: ") + block_reason
+            if safety_blocked:
+                # Translators: Error shown when the AI response is blocked during generation.
+                return "ERROR:" + _("The response was blocked mid-generation by safety filters.")
+            # Translators: Generic error message when Gemini returns an empty response.
+            return "ERROR:" + _("AI failed to provide a response. This might be due to safety filters or a temporary server issue.")
+
         req = request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
-        
-        with GeminiHandler._get_opener(url).open(req, timeout=120) as r:
+
+        with GeminiHandler._get_opener(url).open(req, timeout=600) as r:
             res = json.loads(r.read().decode())
             candidates = res.get('candidates')
             if not candidates:
@@ -1540,11 +2224,12 @@ class GeminiHandler:
             return _extract_text_from_parts(parts)
 
     @staticmethod
-    def _call_with_rotation(func_logic, *args):
-        keys = GeminiHandler._get_api_keys()
+    def _call_with_rotation(func_logic, *args, **kwargs):
+        task = kwargs.pop('task', None)
+        keys = GeminiHandler._get_api_keys(task=task)
         if not keys: 
             # Translators: Error when no API keys are found in settings
-            return "ERROR:" + _("No API Keys configured.")
+            return "ERROR:" + _("No valid API key available or daily quota exhausted for all keys.")
         
         num_keys = len(keys)
         for i in range(num_keys):
@@ -1555,19 +2240,30 @@ class GeminiHandler:
                 GeminiHandler._working_key_idx = idx 
                 return res
             except error.HTTPError as e:
-                err_msg = GeminiHandler._handle_error(e)
-                if err_msg in ["QUOTA_EXCEEDED", "SERVER_ERROR"]:
+                err_msg = getattr(e, 'parsed_msg', GeminiHandler._handle_error(e))
+                err_msg_lower = err_msg.lower()
+                
+                is_quota_or_server = (
+                    err_msg in ["QUOTA_EXCEEDED", "SERVER_ERROR"] or
+                    "quota" in err_msg_lower or 
+                    "exhausted" in err_msg_lower or
+                    (hasattr(e, 'code') and e.code == 429) or
+                    (hasattr(e, 'code') and e.code >= 500)
+                )
+
+                if is_quota_or_server:
                     log.debugWarning(f"Gemini Key index {idx} failed with {err_msg}. Trying next...")
                     if i < num_keys - 1: continue
+                    
                     log.error(f"All Gemini API Keys failed. Last error: {err_msg}")
-
-                    if err_msg == "SERVER_ERROR":
+                    if hasattr(e, 'code') and e.code >= 500:
                         # Translators: Message of a dialog which may pop up while performing an AI call
                         err_msg = _("Server Error {code}: {reason}").format(code=e.code, reason=e.reason)
                         return "ERROR:" + err_msg
                     else:
                         # Translators: Error when all available API keys fail
                         return "ERROR:" + _("All API Keys failed (Quota/Server).")
+                        
                 log.error(f"Gemini API Error with key {idx}: {err_msg}")
                 return "ERROR:" + err_msg
             except Exception as e:
@@ -1624,8 +2320,8 @@ class GeminiHandler:
         return GeminiHandler._call_with_rotation(_logic, image_bytes)
 
     @staticmethod
-    def upload_and_process_batch(file_path, mime_type, page_count, prompt=None, page_range_text=""):
-        keys = GeminiHandler._get_api_keys()
+    def upload_and_process_batch(file_path, mime_type, page_count, prompt=None, page_range_text="", abort_checker=None):
+        keys = GeminiHandler._get_api_keys(task="ocr")
         if not keys: 
             # Translators: Error message for missing API Keys
             return [ "ERROR:" + _("No API Keys.") ]
@@ -1650,7 +2346,7 @@ class GeminiHandler:
                 if not prompt:
                     prompt = get_prompt_text("ocr_document_extract")
                 parts.append({"text": prompt})
-                res_text = GeminiHandler._call_with_rotation(GeminiHandler._logic, [{"parts": parts}], None, False, "ocr")
+                res_text = GeminiHandler._call_with_rotation(GeminiHandler._logic, [{"parts": parts}], None, False, "ocr", task="ocr")
                 if res_text.startswith("ERROR:"): return [res_text]
                 return res_text.split('[[[PAGE_SEP]]]')
             except Exception as e:
@@ -1690,87 +2386,92 @@ class GeminiHandler:
                             active = True
                             break
                         if state == "FAILED": break
+                    if abort_checker and abort_checker(): return ["ERROR: Aborted"]
                     time.sleep(2)
 
                 if not active:
-                    if i < num_keys - 1: continue
+                    if i < num_keys - 1:
+                        if _vision_assistant_instance:
+                            # Translators: Message reported when an upload fails and the system automatically switches to the next available API key.
+                            msg = _("Upload failed. Rotating key...")
+                            wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', msg)
+                            wx.CallAfter(ui.message, msg)
+                        continue
                     # Translators: Error message for upload failure
                     return [ "ERROR:" + _("Upload failed.") ]
 
                 GeminiHandler._register_file_uri(uri, key)
-                url = AIHandler.get_endpoint("ocr")
-                connector = "&" if "?" in url else "?"
-                full_url = f"{url}{connector}key={key}"
-                
                 if not prompt:
                     prompt = get_prompt_text("ocr_document_extract")
-                contents = [{"parts": [{"file_data": {"mime_type": mime_type, "file_uri": uri}}, {"text": prompt}]}]
-
-                payload = {"contents": contents}
-                _apply_gemma_thinking_patch(payload, url)
+                attachments = [{'mime_type': mime_type, 'file_uri': uri}]
                 
-                last_exc = None
-                for gen_attempt in range(5):
-                    try:
-                        req_gen = request.Request(full_url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
-                        with opener.open(req_gen, timeout=300) as r:
-                            res = json.loads(r.read().decode())
-                            
-                            candidates = res.get('candidates', [])
-                            if not candidates:
-                                raise error.HTTPError(full_url, 503, "Empty Response", None, io.BytesIO(b'{}'))
-                                
-                            first_candidate = candidates[0]
-                            finish_reason = first_candidate.get('finishReason', '')
-                            content = first_candidate.get('content', {})
-                            parts = content.get('parts', [])
-                            
-                            if finish_reason in ["MALFORMED_RESPONSE", "OTHER"] or not parts:
-                                if finish_reason == "SAFETY":
-                                    return ["ERROR:" + _("The response was blocked mid-generation by safety filters.")]
-                                raise error.HTTPError(full_url, 503, f"Temporary API Error ({finish_reason or 'Empty Content'})", None, io.BytesIO(b'{}'))
-                                
-                            text = _extract_text_from_parts(parts)
-                            GeminiHandler._working_key_idx = idx
-                            return text.split('[[[PAGE_SEP]]]')
-                    except error.HTTPError as e:
-                        err_code = GeminiHandler._handle_error(e)
-                        is_temporary = False
-                        if hasattr(e, 'code') and (e.code == 429 or e.code >= 500):
-                            is_temporary = True
-                        if "high demand" in err_code.lower() or "quota" in err_code.lower() or "exhausted" in err_code.lower():
-                            is_temporary = True
-                            
-                        if not is_temporary:
-                            return ["ERROR:" + err_code]
-                            
-                        last_exc = e
-                        if gen_attempt < 4:
-                            if _vision_assistant_instance:
-                                if page_range_text:
-                                    # Translators: Status message shown when retrying an AI request with a page range. {range} is the page range, {current} and {total} are attempt numbers.
-                                    retry_msg = _("Retrying API request for pages {range} (Attempt {current} of {total})...").format(range=page_range_text, current=gen_attempt + 2, total=5)
-                                else:
-                                    # Translators: Status message shown when retrying an AI request. {current} and {total} are attempt numbers.
-                                    retry_msg = _("Retrying API request (Attempt {current} of {total})...").format(current=gen_attempt + 2, total=5)
-                                wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', retry_msg)
-                                wx.CallAfter(ui.message, retry_msg)
-                            time.sleep(1.5 * (gen_attempt + 1))
-                if last_exc:
-                    raise last_exc
+                for gen_attempt in range(10):
+                    res = GeminiHandler._call_with_key(GeminiHandler._logic, key, prompt, attachments, False, "ocr", max_retries=1)
                     
-            except error.HTTPError as e:
-                err_code = GeminiHandler._handle_error(e)
-                if i < num_keys - 1: continue
-                if err_code == "QUOTA_EXCEEDED":
-                    # Translators: Message of a dialog which may pop up while performing an AI call
-                    err_msg = _("Error 429: Quota Exceeded (Try later)")
-                elif err_code == "SERVER_ERROR":
-                    # Translators: Message of a dialog which may pop up while performing an AI call
-                    err_msg = _("Server Error {code}: {reason}").format(code=e.code, reason=e.reason)
-                else: err_msg = err_code
-                return ["ERROR:" + err_msg]
-            except Exception as e: return ["ERROR:" + str(e)]
+                    if res and not res.startswith("ERROR:"):
+                        GeminiHandler._working_key_idx = idx
+                        return res.split('[[[PAGE_SEP]]]')
+                        
+                    err_msg = res[6:] if res.startswith("ERROR:") else "Unknown Error"
+                    err_msg_lower = err_msg.lower()
+                    
+                    is_fatal_error = any(x in err_msg_lower for x in [
+                        "daily", "per day", "per_day", "perday", "requestsperday", "quota_exceeded_daily",
+                        "400", "403", "bad request", "forbidden", "blocked"
+                    ])
+                    
+                    if is_fatal_error:
+                        if i < num_keys - 1:
+                            break
+                        return [res]
+                        
+                    delay_sec = 0
+                    match = re.search(r"retry in ([\d\.]+)s", err_msg_lower)
+                    if match:
+                        try: delay_sec = float(match.group(1))
+                        except Exception: pass
+                        
+                    if delay_sec > 0:
+                        if _vision_assistant_instance:
+                            # Translators: Message shown when an API rate limit is reached. {sec} is the number of seconds to wait.
+                            retry_msg = _("Rate limit reached. Waiting {sec}s before retry...").format(sec=int(delay_sec))
+                            wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', retry_msg)
+                            wx.CallAfter(ui.message, retry_msg)
+                        for step in range(int(delay_sec * 2) + 2):
+                            if abort_checker and abort_checker(): return ["ERROR: Aborted"]
+                            time.sleep(0.5)
+                        continue
+                        
+                    if gen_attempt < 9:
+                        if _vision_assistant_instance:
+                            if page_range_text:
+                                # Translators: Status message indicating an API request retry due to a temporary error for specific pages. {error} is replaced with details, {range} is the page range, {current} and {total} are attempts.
+                                retry_msg = _("Temporary error ({error}). Retrying API request for pages {range} (Attempt {current}/{total})...").format(error=err_msg, range=page_range_text, current=gen_attempt + 2, total=10)
+                            else:
+                                # Translators: Status message indicating an API request retry due to a temporary error. {error} is replaced with details, {current} and {total} are attempts.
+                                retry_msg = _("Temporary error ({error}). Retrying on current key (Attempt {current}/{total})...").format(error=err_msg, current=gen_attempt + 2, total=10)
+                            wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', retry_msg)
+                            wx.CallAfter(ui.message, retry_msg)
+                        time_limit_sleep = 5.0 * (gen_attempt + 1)
+                        for step in range(int(time_limit_sleep * 2)):
+                            if abort_checker and abort_checker(): return ["ERROR: Aborted"]
+                            time.sleep(0.5)
+                else:
+                    if i == num_keys - 1:
+                        return [res] if res else ["ERROR:" + _("All keys failed.")]
+                        
+            except Exception as e:
+                log.error(f"Error in upload_and_process_batch with key index {idx}: {e}", exc_info=True)
+                if i == num_keys - 1:
+                    return ["ERROR:" + str(e)]
+                    
+            if i < num_keys - 1:
+                if _vision_assistant_instance:
+                    # Translators: Message reported when API quota is exhausted and the system rotates key.
+                    msg = _("Daily quota exhausted or retries failed. Rotating key and re-uploading...")
+                    wx.CallAfter(setattr, _vision_assistant_instance, 'current_status', msg)
+                    wx.CallAfter(ui.message, msg)
+
         # Translators: Error when all available API keys fail
         return ["ERROR:" + _("All keys failed.")]
 
@@ -1809,8 +2510,8 @@ class GeminiHandler:
         if p_active == "custom" and not config.conf["VisionAssistant"].get("custom_upload_support", False):
             return None
             
-        keys = GeminiHandler._get_api_keys()
-        if not keys: return None
+        keys = GeminiHandler._get_api_keys(task="chat")
+        if not keys: return "ERROR:" + _("No valid API key available or daily quota exhausted for all keys.")
         opener = GeminiHandler._get_opener()
         upload_url_base = AIHandler.get_endpoint("upload")
         base_api_url = AIHandler.get_base_url(p_active).rstrip('/')
@@ -1892,7 +2593,212 @@ class GeminiHandler:
                 if 'inline_data' in part: return part['inline_data']['data']
                 if 'text' in part: raise Exception(f"Model refused audio: {part['text']}")
                 raise Exception("Unknown response format")
-        return GeminiHandler._call_with_rotation(_logic, text, voice_name)
+        return GeminiHandler._call_with_rotation(_logic, text, voice_name, task="tts")
+
+    @staticmethod
+    def _upload_video_with_key(file_path, key, abort_checker=None):
+        base_upload_url = AIHandler.get_endpoint("upload")
+        try:
+            file_size = os.path.getsize(file_path)
+            headers_init = {"X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start", "X-Goog-Upload-Header-Content-Length": str(file_size), "X-Goog-Upload-Header-Content-Type": "video/mp4", "Content-Type": "application/json", "x-goog-api-key": key}
+            req_init = request.Request(base_upload_url, data=json.dumps({"file": {"display_name": os.path.basename(file_path)}}).encode(), headers=headers_init, method="POST")
+            with get_proxy_opener().open(req_init, timeout=120) as r:
+                upload_url = r.headers.get("x-goog-upload-url")
+
+            if not upload_url or (abort_checker and abort_checker()): return None
+
+            with open(file_path, 'rb') as f: data = f.read()
+            req_up = request.Request(upload_url, data=data, headers={"Content-Length": str(file_size), "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize"}, method="POST")
+            with get_proxy_opener().open(req_up, timeout=900) as r:
+                res = json.loads(r.read().decode())
+                file_name_id = res['file']['name']
+
+            if abort_checker and abort_checker(): return None
+
+            p_base = AIHandler.get_base_url("gemini").rstrip('/')
+            clean_base = re.sub(r'/(v1|v1beta|v1alpha)$', '', p_base, flags=re.IGNORECASE)
+            check_url = f"{clean_base}/v1beta/{file_name_id}"
+
+            for attempt in range(150):
+                if abort_checker and abort_checker(): return None
+                req_check = request.Request(check_url, headers={"x-goog-api-key": key})
+                try:
+                    with get_proxy_opener().open(req_check, timeout=30) as r:
+                        data = json.loads(r.read().decode())
+                        if data.get('state') == "ACTIVE":
+                            uri = data.get('uri')
+                            GeminiHandler._register_file_uri(uri, key)
+                            duration_sec = None
+                            v_meta = data.get('videoMetadata') or data.get('video_metadata') or {}
+                            dur_str = v_meta.get('videoDuration') or v_meta.get('video_duration') or v_meta.get('duration') or ''
+                            if dur_str:
+                                try:
+                                    duration_sec = float(dur_str.rstrip('s'))
+                                except Exception:
+                                    pass
+                            if duration_sec:
+                                if not hasattr(GeminiHandler, '_file_durations'):
+                                    GeminiHandler._file_durations = {}
+                                GeminiHandler._file_durations[uri] = duration_sec
+                            return uri
+                except Exception:
+                    pass
+                for step in range(4):
+                    if abort_checker and abort_checker(): return None
+                    time.sleep(0.5)
+            return None
+        except error.HTTPError as e:
+            err_msg = GeminiHandler._handle_error(e)
+            log.error(f"Gemini video upload HTTPError: {err_msg}")
+            if hasattr(e, 'code') and e.code == 429:
+                GeminiHandler._ban_key(key, getattr(e, 'is_daily', False), task="video")
+            return None
+        except Exception as e:
+            log.error(f"Gemini video upload error: {e}")
+            return None
+
+    @staticmethod
+    def upload_and_get_duration(file_path, report_callback=None, abort_checker=None):
+        keys = GeminiHandler._get_api_keys(task="video")
+        num_keys = len(keys)
+        for i in range(num_keys):
+            if abort_checker and abort_checker(): return None, None, None
+            idx = (GeminiHandler._working_key_idx + i) % num_keys
+            key = keys[idx]
+            if report_callback:
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                # Translators: Status message indicating video upload progress with file size in MB.
+                report_callback(_("Uploading to AI ({size:.1f} MB)...").format(size=file_size_mb))
+            
+            uri = GeminiHandler._upload_video_with_key(file_path, key, abort_checker)
+            if uri:
+                dur = GeminiHandler._file_durations.get(uri)
+                GeminiHandler._working_key_idx = idx
+                return uri, dur, key
+        return None, None, None
+
+    @staticmethod
+    def process_video_task(file_path, prompt, start_offset_sec=None, end_offset_sec=None, json_mode=False, report_callback=None, abort_checker=None, current_uri=None, current_key=None, is_direct=False, validator=None):
+        keys = GeminiHandler._get_api_keys(task="video")
+        num_keys = len(keys)
+        
+        if current_key in keys:
+            GeminiHandler._working_key_idx = keys.index(current_key)
+
+        keys_exhausted = 0
+        
+        while keys_exhausted < num_keys:
+            if abort_checker and abort_checker(): return None, None, None
+            
+            idx = GeminiHandler._working_key_idx % num_keys
+            key = keys[idx]
+            
+            if not is_direct and key != current_key:
+                current_uri = None
+                
+            try:
+                if not current_uri and file_path and not is_direct:
+                    if report_callback:
+                        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                        # Translators: Status message indicating video upload progress with file size in MB and retry attempt numbers.
+                        report_callback(_("Uploading to AI ({size:.1f} MB) (Key {current}/{total})...").format(size=file_size_mb, current=idx+1, total=num_keys))
+                    
+                    current_uri = GeminiHandler._upload_video_with_key(file_path, key, abort_checker)
+                    if not current_uri:
+                        if report_callback:
+                            # Translators: Message reported when a file upload fails and the system is retrying.
+                            report_callback(_("Upload failed. Retrying..."))
+                        time.sleep(2.0)
+                        keys_exhausted += 1
+                        GeminiHandler._working_key_idx = (GeminiHandler._working_key_idx + 1) % num_keys
+                        continue 
+                    current_key = key
+                elif is_direct and not current_uri:
+                    current_uri = file_path
+                    current_key = key
+                
+                if not current_uri:
+                    keys_exhausted += 1
+                    GeminiHandler._working_key_idx = (GeminiHandler._working_key_idx + 1) % num_keys
+                    continue
+
+                attachments = [{'mime_type': 'video/mp4', 'file_uri': current_uri}]
+                if start_offset_sec is not None and end_offset_sec is not None and end_offset_sec != -1:
+                    attachments[0]['video_metadata'] = {
+                        "start_offset": f"{int(start_offset_sec)}s",
+                        "end_offset": f"{int(end_offset_sec)}s"
+                    }
+                
+                res = None
+                for attempt in range(10):
+                    if abort_checker and abort_checker(): return None, None, None
+                    
+                    res = GeminiHandler._call_with_key(GeminiHandler._logic, key, prompt, attachments, json_mode, "video", max_retries=1)
+                    
+                    if res and not res.startswith("ERROR:"):
+                        if validator and not validator(res):
+                            # Translators: Error shown internally when AI stops early
+                            res = "ERROR:" + _("Incomplete description. AI stopped early.")
+                        else:
+                            return res, current_uri, current_key
+                    
+                    err_msg = res[6:] if res and res.startswith("ERROR:") else "Unknown Error"
+                    err_msg_lower = err_msg.lower()
+                    
+                    is_fatal_error = any(x in err_msg_lower for x in [
+                        "daily", "per day", "per_day", "perday", "requestsperday", "quota_exceeded_daily",
+                        "400", "403", "bad request", "forbidden", "blocked"
+                    ])
+                    
+                    if is_fatal_error:
+                        break
+                        
+                    delay_sec = 0
+                    match = re.search(r"retry in ([\d\.]+)s", err_msg_lower)
+                    if match:
+                        try: delay_sec = float(match.group(1))
+                        except Exception: pass
+                        
+                    if delay_sec > 0:
+                        if report_callback:
+                            report_callback(_("Rate limit reached. Waiting {sec}s before retry...").format(sec=int(delay_sec)))
+                        for step in range(int(delay_sec * 2) + 2):
+                            if abort_checker and abort_checker(): return None, None, None
+                            time.sleep(0.5)
+                        continue
+                            
+                    if report_callback:
+                        # Translators: Status message indicating an API request retry due to a temporary error. {error} is replaced with details, {current} and {total} are attempts.
+                        report_callback(_("Temporary error ({error}). Retrying on current key (Attempt {current}/{total})...").format(error=err_msg, current=attempt+1, total=10))
+                    
+                    time_limit_sleep = 5.0 * (attempt + 1)
+                    for step in range(int(time_limit_sleep * 2)):
+                        if abort_checker and abort_checker(): return None, None, None
+                        time.sleep(0.5)
+                        
+                if res and not res.startswith("ERROR:"):
+                    return res, current_uri, current_key
+                    
+                keys_exhausted += 1
+                if keys_exhausted < num_keys:
+                    GeminiHandler._working_key_idx = (GeminiHandler._working_key_idx + 1) % num_keys
+                    if report_callback:
+                        # Translators: Message reported when API quota is exhausted and the system rotates key.
+                        report_callback(_("Daily quota exhausted or retries failed. Rotating key and re-uploading..."))
+                else:
+                    if report_callback:
+                        # Translators: Message reported when all available API keys have reached their usage limits.
+                        report_callback(_("All API keys exhausted or server unavailable."))
+                    break
+                    
+            except Exception as e:
+                log.error(f"Error under key {idx}: {e}")
+                keys_exhausted += 1
+                GeminiHandler._working_key_idx = (GeminiHandler._working_key_idx + 1) % num_keys
+                continue
+                
+        # Translators: Error message shown when all API keys run out of quota or fail.
+        return "ERROR:" + _("All API keys failed or daily quota exhausted."), None, None
 
 class AIHandler:
     @staticmethod
@@ -1978,19 +2884,19 @@ class AIHandler:
             mid = mid_orig.lower()
             mname = mname_orig.lower()
             if provider == "gemini":
-                excluded = ["nano", "banana", "robotic", "vo3", "v03", "veo", "tts", "native", "audio", "image", "aqa", "lyria"]
+                excluded = ["nano", "banana", "robotic", "vo3", "v03", "veo", "tts", "native", "audio", "image", "aqa", "lyria", "embedding", "bison", "gecko", "deep", "antigravity", "computer"]
                 if any(x in mid or x in mname for x in excluded):
                     continue
             elif provider == "groq":
-                excluded = ["whisper", "audio", "vision-preview"]
+                excluded = ["whisper", "audio", "vision-preview", "embedding"]
                 if any(x in mid or x in mname for x in excluded):
                     continue
             elif provider == "openai":
-                excluded = ["whisper", "tts", "dall-e", "embedding", "moderation"]
+                excluded = ["whisper", "tts", "dall-e", "embedding", "moderation", "audio", "realtime", "babbage"]
                 if any(x in mid or x in mname for x in excluded):
                     continue
             elif provider == "mistral":
-                excluded = ["embed"]
+                excluded = ["embed", "moderation"]
                 if any(x in mid or x in mname for x in excluded):
                     continue
             filtered.append((mid_orig, mname_orig))
@@ -2052,7 +2958,8 @@ class AIHandler:
                     "ocr": "custom_ocr_model",
                     "stt": "custom_stt_model",
                     "tts": "custom_tts_model",
-                    "operator": "custom_operator_model"
+                    "operator": "custom_operator_model",
+                    "video": "custom_video_model"
                 }
                 if task_type in target_model_map:
                     model = config.conf["VisionAssistant"].get(target_model_map[task_type], "").strip()
@@ -2181,8 +3088,19 @@ class AIHandler:
     def call(prompt, attachments=None, json_mode=False, task="chat"):
         p = config.conf["VisionAssistant"]["active_provider"]
         if AIHandler.is_gemini():
-            return GeminiHandler._call_with_rotation(GeminiHandler._logic, prompt, attachments, json_mode, task)
+            forced_key = None
+            if attachments:
+                for att in attachments:
+                    if isinstance(att, dict) and 'file_uri' in att:
+                        forced_key = GeminiHandler._get_registered_key(att['file_uri'])
+                        if forced_key:
+                            break
+            if forced_key:
+                return GeminiHandler._call_with_key(GeminiHandler._logic, forced_key, prompt, attachments, json_mode, task)
+
+            return GeminiHandler._call_with_rotation(GeminiHandler._logic, prompt, attachments, json_mode, task, task=task)
         
+
         keys = AIHandler.get_keys(p)
         if not keys and p != "custom":
             # Translators: Error when no API keys are found in settings
@@ -2192,7 +3110,16 @@ class AIHandler:
         is_audio = any(a.get('mime_type', '').startswith('audio/') for a in attachments) if attachments else False
         is_image = any(a.get('mime_type', '').startswith('image/') for a in attachments) if attachments else False
         
-        if is_audio and not AIHandler.is_gemini():
+        custom_audio_chat = (
+            p == "custom"
+            and is_audio
+            and not (
+                config.conf["VisionAssistant"].get("use_advanced_endpoints", False)
+                and config.conf["VisionAssistant"].get("custom_stt_url", "").strip()
+            )
+        )
+
+        if is_audio and not AIHandler.is_gemini() and not custom_audio_chat:
             audio_att = next(a for a in attachments if a.get('mime_type', '').startswith('audio/'))
             url = AIHandler.get_endpoint("stt")
             model = "whisper-1"
@@ -2232,6 +3159,15 @@ class AIHandler:
                         for att in attachments:
                             if "data" in att and att.get('mime_type', '').startswith('image/'):
                                 contents.append({"type": "image_url", "image_url": {"url": f"data:{att['mime_type']};base64,{att['data']}"}})
+                            elif custom_audio_chat and "data" in att and att.get('mime_type', '').startswith('audio/'):
+                                audio_format = att['mime_type'].split('/', 1)[-1].replace('mpeg', 'mp3')
+                                contents.append({
+                                    "type": "input_audio",
+                                    "input_audio": {
+                                        "data": att['data'],
+                                        "format": audio_format,
+                                    },
+                                })
                         messages = [{"role": "user", "content": contents}]
                     else:
                         messages = [{"role": "user", "content": prompt}]
@@ -2390,7 +3326,7 @@ class AIHandler:
                 except Exception as e:
                     if key == keys[-1]: return f"ERROR: {str(e)}"
                     continue
-        return AIHandler.call(get_prompt_text("ocr_image_extract"), attachments=[{'mime_type': mime_type, 'data': img_or_pdf_base64}])
+        return AIHandler.call(get_prompt_text("ocr_image_extract"), attachments=[{'mime_type': mime_type, 'data': img_or_pdf_base64}], task="ocr")
 
     @staticmethod
     def _transcribe_helper(key, audio_att, url, model_name):
@@ -2882,7 +3818,7 @@ class MouseSimulator:
             down_flag = MOUSEEVENTF_LEFTDOWN
             up_flag = MOUSEEVENTF_LEFTUP
         count = 2 if double else 1
-        for _ in range(count):
+        for _i in range(count):
             inputs = [
                 MouseSimulator._make_mouse_input(down_flag),
                 MouseSimulator._make_mouse_input(up_flag),
@@ -3075,7 +4011,7 @@ class _MicCapture:
     def _loop(self):
         winmm = ctypes.windll.winmm
         hdr_size = ctypes.sizeof(_WAVEHDR)
-        headers = [self._make_header() for _ in range(4)]
+        headers = [self._make_header() for _i in range(4)]
         for buf, hdr in headers:
             winmm.waveInPrepareHeader(self.hwi, ctypes.byref(hdr), hdr_size)
             winmm.waveInAddBuffer(self.hwi, ctypes.byref(hdr), hdr_size)
@@ -4089,31 +5025,42 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         # Translators: Label for OCR model selection
         self.lbl_advOcr = wx.StaticText(self.advRoutingBox, label=_("OCR / Vision Model:"))
         advRSizer.Add(self.lbl_advOcr, 0, wx.ALL, 2)
-        self.advOcrModel = wx.Choice(self.advRoutingBox, choices=[])
+        self.advOcrModel = wx.ComboBox(self.advRoutingBox, style=wx.TE_PROCESS_ENTER)
+        self.advOcrModel.Bind(wx.EVT_TEXT, self.onModelFilter)
         advRSizer.Add(self.advOcrModel, 0, wx.EXPAND | wx.ALL, 2)
         
         # Translators: Label for STT model selection
         self.lbl_advStt = wx.StaticText(self.advRoutingBox, label=_("Speech-to-Text (STT) Model:"))
         advRSizer.Add(self.lbl_advStt, 0, wx.ALL, 2)
-        self.advSttModel = wx.Choice(self.advRoutingBox, choices=[])
+        self.advSttModel = wx.ComboBox(self.advRoutingBox, style=wx.TE_PROCESS_ENTER)
+        self.advSttModel.Bind(wx.EVT_TEXT, self.onModelFilter)
         advRSizer.Add(self.advSttModel, 0, wx.EXPAND | wx.ALL, 2)
         
         # Translators: Label for TTS model selection (Assigning to self to toggle visibility)
         self.lbl_advTts = wx.StaticText(self.advRoutingBox, label=_("Text-to-Speech (TTS) Model:"))
         advRSizer.Add(self.lbl_advTts, 0, wx.ALL, 2)
-        self.advTtsModel = wx.Choice(self.advRoutingBox, choices=[])
+        self.advTtsModel = wx.ComboBox(self.advRoutingBox, style=wx.TE_PROCESS_ENTER)
+        self.advTtsModel.Bind(wx.EVT_TEXT, self.onModelFilter)
         advRSizer.Add(self.advTtsModel, 0, wx.EXPAND | wx.ALL, 2)
 
         # Translators: Label for a dropdown menu in the "Advanced Model Routing" section of settings to choose a specific model for AI Operator tasks.
         self.lbl_advOperator = wx.StaticText(self.advRoutingBox, label=_("AI Operator Model:"))
         advRSizer.Add(self.lbl_advOperator, 0, wx.ALL, 2)
-        self.advOperatorModel = wx.Choice(self.advRoutingBox, choices=[])
+        self.advOperatorModel = wx.ComboBox(self.advRoutingBox, style=wx.TE_PROCESS_ENTER)
+        self.advOperatorModel.Bind(wx.EVT_TEXT, self.onModelFilter)
         advRSizer.Add(self.advOperatorModel, 0, wx.EXPAND | wx.ALL, 2)
+        # Translators: Label for the Video Analysis model selection in the Advanced Model Routing section.
+        self.lbl_advVideo = wx.StaticText(self.advRoutingBox, label=_("Video Analysis Model (Gemini only):"))
+        advRSizer.Add(self.lbl_advVideo, 0, wx.ALL, 2)
+        self.advVideoModel = wx.ComboBox(self.advRoutingBox, style=wx.TE_PROCESS_ENTER)
+        self.advVideoModel.Bind(wx.EVT_TEXT, self.onModelFilter)
+        advRSizer.Add(self.advVideoModel, 0, wx.EXPAND | wx.ALL, 2)
 
         # Translators: Label for the Live Assistant model selection in the Advanced Model Routing section (Gemini only).
         self.lbl_advLive = wx.StaticText(self.advRoutingBox, label=_("Live Assistant Model (Gemini only):"))
         advRSizer.Add(self.lbl_advLive, 0, wx.ALL, 2)
-        self.advLiveModel = wx.Choice(self.advRoutingBox, choices=[])
+        self.advLiveModel = wx.ComboBox(self.advRoutingBox, style=wx.TE_PROCESS_ENTER)
+        self.advLiveModel.Bind(wx.EVT_TEXT, self.onModelFilter)
         advRSizer.Add(self.advLiveModel, 0, wx.EXPAND | wx.ALL, 2)
 
         self.advRoutingBox.SetSizer(advRSizer)
@@ -4209,6 +5156,32 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         self.voice_sel.Bind(wx.EVT_CHOICE, self.onVoiceSelectionChanged)
         dHelper.addItem(self.voice_sel)
         settingsSizer.Add(docSizer, 0, wx.EXPAND | wx.ALL, 5)
+
+        # --- Video Settings Group ---
+        self.vidPanel = wx.Panel(self)
+        # Translators: Title of settings group for Video features
+        groupLabel = _("Video")
+        vidBox = wx.StaticBox(self.vidPanel, label=groupLabel)
+        vidSizer = wx.StaticBoxSizer(vidBox, wx.VERTICAL)
+        vHelper = gui.guiHelper.BoxSizerHelper(vidBox, sizer=vidSizer)
+        
+        # Translators: Label for Video Chunk Size setting. Explains the trade-off between chunk size, API requests, and description quality.
+        self.lbl_vid_chunk = wx.StaticText(self.vidPanel, label=_("Video Chunk Size for Audio Description (Minutes, 0 to disable):\nTip: Higher values use fewer API requests but rely on luck to succeed. Lower values guarantee highly detailed and precise descriptions."))
+        vHelper.addItem(self.lbl_vid_chunk)
+        self.vid_chunk_size = wx.SpinCtrl(self.vidPanel, min=0, max=300, initial=config.conf["VisionAssistant"]["video_srt_chunk_minutes"])
+        vHelper.addItem(self.vid_chunk_size)
+
+        # Translators: Checkbox label to add character list as the first subtitle in video SRT output.
+        self.vid_chars_as_sub = wx.CheckBox(self.vidPanel, label=_("Add character list as first subtitle"))
+        self.vid_chars_as_sub.SetValue(config.conf["VisionAssistant"].get("video_chars_as_subtitle", True))
+        vHelper.addItem(self.vid_chars_as_sub)
+
+        # Translators: Checkbox label to add an AI warning disclaimer at the beginning of the video SRT output.
+        self.vid_add_disclaimer = wx.CheckBox(self.vidPanel, label=_("Add AI disclaimer at the beginning"))
+        self.vid_add_disclaimer.SetValue(config.conf["VisionAssistant"].get("video_add_disclaimer", True))
+        vHelper.addItem(self.vid_add_disclaimer)
+        self.vidPanel.SetSizer(vidSizer)
+        settingsSizer.Add(self.vidPanel, 0, wx.EXPAND | wx.ALL, 5)
 
         # Translators: Title of the settings group for Captchas
         # --- CAPTCHA Group ---
@@ -4354,6 +5327,8 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.lbl_advTts.Show(tts_supported)
             self.advOperatorModel.Show(True)
             self.lbl_advOperator.Show(True)
+            self.advVideoModel.Show(live_supported)
+            self.lbl_advVideo.Show(live_supported)
             self.advLiveModel.Show(live_supported)
             self.lbl_advLive.Show(live_supported)
 
@@ -4400,6 +5375,18 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
 
         if hasattr(self, 'advEndpointBox'):
             self.advEndpointBox.Layout()
+        is_gemini_api = False
+        if provider == "gemini":
+            is_gemini_api = True
+        elif provider == "custom":
+            custom_type_idx = self.customType.GetSelection()
+            if custom_type_idx != wx.NOT_FOUND:
+                is_gemini_api = (custom_type_idx == 1)
+            else:
+                is_gemini_api = (config.conf["VisionAssistant"].get("custom_api_type") == "gemini")
+                
+        if hasattr(self, 'vidPanel'):
+            self.vidPanel.Show(is_gemini_api)
         self.Layout()
         p = self.connectionBox.GetParent()
         if p: p.Layout()
@@ -4558,6 +5545,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.advSttModel.Clear()
             self.advTtsModel.Clear()
             self.advOperatorModel.Clear()
+            self.advVideoModel.Clear()
             self.advLiveModel.Clear()
 
             # Translators: Option to follow the main model selected in the primary dropdown
@@ -4568,6 +5556,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.advOcrModel.Append(default_main_label, "")
             self.advSttModel.Append(default_main_label, "")
             self.advOperatorModel.Append(default_main_label, "")
+            self.advVideoModel.Append(default_main_label, "")
             self.advLiveModel.Append(auto_task_label, "")
             self.advTtsModel.Append(auto_task_label, "")
 
@@ -4582,6 +5571,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
                 self.advSttModel.Append(m_name, m_id)
                 self.advTtsModel.Append(m_name, m_id)
                 self.advOperatorModel.Append(m_name, m_id)
+                self.advVideoModel.Append(m_name, m_id)
                 if "live" in m_id.lower():
                     self.advLiveModel.Append(m_name, m_id)
                 storage_parts.append(f"{m_id}|{m_name}")
@@ -4600,6 +5590,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.advSttModel.SetSelection(0)
             self.advTtsModel.SetSelection(0)
             self.advOperatorModel.SetSelection(0)
+            self.advVideoModel.SetSelection(0)
             self.advLiveModel.SetSelection(0)
             
             self._all_models_backup = [(self.model.GetString(i), self.model.GetClientData(i)) for i in range(self.model.GetCount())]
@@ -4619,6 +5610,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         self.advSttModel.Clear()
         self.advTtsModel.Clear()
         self.advOperatorModel.Clear()
+        self.advVideoModel.Clear()
         self.advLiveModel.Clear()
 
         # Translators: Option to follow the main model selected in the primary dropdown.
@@ -4629,6 +5621,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         self.advOcrModel.Append(default_main_label, "")
         self.advSttModel.Append(default_main_label, "")
         self.advOperatorModel.Append(default_main_label, "")
+        self.advVideoModel.Append(default_main_label, "")
         self.advLiveModel.Append(auto_task_label, "")
         self.advTtsModel.Append(auto_task_label, "")
 
@@ -4653,6 +5646,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             self.advSttModel.Append(m_name, m_id)
             self.advTtsModel.Append(m_name, m_id)
             self.advOperatorModel.Append(m_name, m_id)
+            self.advVideoModel.Append(m_name, m_id)
             if "live" in m_id.lower():
                 self.advLiveModel.Append(m_name, m_id)
             if m_id not in self._current_model_ids: self._current_model_ids.append(m_id)
@@ -4681,6 +5675,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             (self.advOperatorModel, f"{p_name}_operator_model"),
         ]
         if self._live_supported_for(p_name):
+            routing_map.append((self.advVideoModel, f"{p_name}_video_model"))
             routing_map.append((self.advLiveModel, f"{p_name}_live_model"))
         for attr, conf_key in routing_map:
             saved_id = config.conf["VisionAssistant"].get(conf_key, "")
@@ -4778,6 +5773,7 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
                 (self.advOperatorModel, f"{p_name}_operator_model"),
             ]
             if self._live_supported_for(p_name):
+                routing_save.append((self.advVideoModel, f"{p_name}_video_model"))
                 routing_save.append((self.advLiveModel, f"{p_name}_live_model"))
             for attr, conf_key in routing_save:
                 idx = attr.GetSelection()
@@ -4827,6 +5823,9 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
             config.conf["VisionAssistant"]["captcha_mode"] = 'navigator' if self.captchaMode.GetSelection() == 0 else 'fullscreen'
             config.conf["VisionAssistant"]["ocr_engine"] = OCR_ENGINES[self.ocr_sel.GetSelection()][1]
             config.conf["VisionAssistant"]["ocr_batch_size"] = self.batch_size.GetValue()
+            config.conf["VisionAssistant"]["video_srt_chunk_minutes"] = self.vid_chunk_size.GetValue()
+            config.conf["VisionAssistant"]["video_chars_as_subtitle"] = self.vid_chars_as_sub.Value
+            config.conf["VisionAssistant"]["video_add_disclaimer"] = self.vid_add_disclaimer.Value
             config.conf["VisionAssistant"]["custom_prompts_v2"] = serialize_custom_prompts_v2(self.customPromptItems)
             config.conf["VisionAssistant"]["default_refine_prompts"] = serialize_default_prompt_overrides(self.defaultPromptItems)
         except Exception as e:
@@ -4840,28 +5839,31 @@ class SettingsPanel(gui.settingsDialogs.SettingsPanel):
         sel = cb.GetSelection()
         if sel != wx.NOT_FOUND:
             model_id = cb.GetClientData(sel)
-            p_idx = self.provider_sel.GetSelection()
-            if p_idx == 4 and model_id:
-                self.customModelName.SetValue(model_id)
+            if cb == getattr(self, 'model', None):
+                p_idx = getattr(self, 'provider_sel', None).GetSelection() if getattr(self, 'provider_sel', None) else -1
+                if p_idx == 4 and model_id:
+                    self.customModelName.SetValue(model_id)
             return
 
         query = cb.GetValue()
         query_low = query.lower()
         
-        if not self._all_models_backup and cb.GetCount() > 0:
-            self._all_models_backup = [(cb.GetString(i), cb.GetClientData(i)) for i in range(cb.GetCount())]
+        if not hasattr(cb, '_all_models_backup') and cb.GetCount() > 0:
+            cb._all_models_backup = [(cb.GetString(i), cb.GetClientData(i)) for i in range(cb.GetCount())]
+            
+        backup = getattr(cb, '_all_models_backup', [])
         
         if not query_low:
-            if cb.GetCount() != len(self._all_models_backup):
+            if cb.GetCount() != len(backup):
                 cb.Freeze()
                 cb.Clear()
-                for name, data in self._all_models_backup:
+                for name, data in backup:
                     cb.Append(name, data)
                 cb.SetValue("")
                 cb.Thaw()
             return
 
-        filtered = [(name, data) for name, data in self._all_models_backup if query_low in name.lower()]
+        filtered = [(name, data) for name, data in backup if query_low in name.lower()]
         
         cb.Freeze()
         cb.Clear()
@@ -5072,6 +6074,7 @@ class ChatDialog(wx.Dialog):
                         cached_keys = sorted(self.parent.page_cache.keys())
                         doc_text = "\n\n".join(self.parent.page_cache[k] for k in cached_keys)
                     if not doc_text:
+                        # Translators: Placeholder text used in document chat when the text is still being extracted or is empty.
                         doc_text = _("[Text extraction in progress or empty]")
                     
                     system_template = get_prompt_text("document_chat_system")
@@ -5568,7 +6571,7 @@ class DocumentViewerDialog(wx.Dialog):
                     [("target_lang", self.target_lang)]
                 )
                 range_str = f"{i+1}-{batch_end+1}"
-                results = GeminiHandler.upload_and_process_batch(upload_path, "application/pdf", current_batch_count, prompt=p_text, page_range_text=range_str)
+                results = GeminiHandler.upload_and_process_batch(upload_path, "application/pdf", current_batch_count, prompt=p_text, page_range_text=range_str, abort_checker=lambda: self.abort)
                 if self.abort:
                     break
                 if results and not str(results[0]).startswith("ERROR:"):
@@ -5655,14 +6658,12 @@ class DocumentViewerDialog(wx.Dialog):
                     wx.CallAfter(self.update_view)
                 else:
                     err_msg = res[6:] if res else "Unknown"
-                    # این خطوط رفتند داخل else
                     for j in range(i, batch_end + 1):
                         # Translators: Error message shown in the document viewer when a specific page scan fails. The {err} placeholder is replaced with the error details.
                         self.page_cache[j] = _("[Scan failed: {err}]").format(err=err_msg)
                     wx.CallAfter(self.update_view)
                     
             except Exception as e:
-                # این بخش اضافه شد تا اگر اینترنت قطع شد افزونه کرش نکند
                 log.error(f"Error in Mistral batch scan: {e}", exc_info=True)
                 err_msg = str(e)
                 for j in range(i, batch_end + 1):
@@ -5816,8 +6817,13 @@ class DocumentViewerDialog(wx.Dialog):
     def on_save_all(self, event):
         # Translators: File dialog filter for saving text/html
         wildcard = "Text File (*.txt)|*.txt|HTML File (*.html)|*.html"
+        default_name = ""
+        if self.v_doc and self.v_doc.file_paths:
+            base = os.path.basename(self.v_doc.file_paths[0])
+            name, _ext = os.path.splitext(base)
+            default_name = name + ".txt"
         # Translators: File dialog title for saving
-        path = get_file_path(_("Save"), wildcard, mode="save")
+        path = get_file_path(_("Save"), wildcard, mode="save", default_name=default_name)
         if path:
             is_html = path.lower().endswith('.html')
             self.btn_save.Disable()
@@ -6100,6 +7106,1097 @@ class LabelManagerDialog(wx.Dialog):
         self.action_type = "rescan"
         self.EndModal(wx.ID_OK)
 
+
+class VideoSourceDialog(wx.Dialog):
+    def __init__(self, parent):
+        # Translators: Title of the video analysis dialog
+        title = _("{name} - Analyze Video").format(name=ADDON_NAME)
+        super().__init__(parent, title=title, size=(550, 290))
+        self.local_path = None
+        
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        # Translators: Label instructing the user to enter a URL or browse for a local video
+        lbl = wx.StaticText(self, label=_("Enter Video URL (YouTube, Instagram, Twitter, TikTok) or Browse for a local video:"))
+        sizer.Add(lbl, 0, wx.ALL, 10)
+        
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+        self.url_input = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
+        hbox.Add(self.url_input, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        
+        # Translators: Button to browse for a local video file
+        btn_browse = wx.Button(self, label=_("&Browse..."))
+        btn_browse.Bind(wx.EVT_BUTTON, self.on_browse)
+        hbox.Add(btn_browse, 0, wx.ALIGN_CENTER_VERTICAL)
+        
+        sizer.Add(hbox, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        
+        # Translators: Options for video analysis mode
+        choices = [_("General Video Analysis"), _("Generate Audio Description (SRT File)")]
+        self.action_choice = wx.RadioBox(
+            self, 
+            # Translators: Label for the video action radio box
+            label=_("Action"), 
+            choices=choices,
+            majorDimension=1, 
+            style=wx.RA_SPECIFY_COLS
+        )
+        sizer.Add(self.action_choice, 0, wx.EXPAND | wx.ALL, 10)
+
+        self.action_choice.Bind(wx.EVT_RADIOBOX, self.on_action_change)
+
+        # Translators: Checkbox label to add character list as the first subtitle in video SRT output.
+        self.chars_as_sub_check = wx.CheckBox(self, label=_("Add character list as first subtitle"))
+        self.chars_as_sub_check.SetValue(config.conf["VisionAssistant"].get("video_chars_as_subtitle", True))
+        sizer.Add(self.chars_as_sub_check, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        self.chars_as_sub_check.Show(False)
+
+        # Translators: Checkbox label to add an AI warning disclaimer at the beginning of the video SRT output.
+        self.disclaimer_check = wx.CheckBox(self, label=_("Add AI disclaimer at the beginning"))
+        self.disclaimer_check.SetValue(config.conf["VisionAssistant"].get("video_add_disclaimer", True))
+        sizer.Add(self.disclaimer_check, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        self.disclaimer_check.Show(False)
+
+        btn_sizer = self.CreateButtonSizer(wx.OK | wx.CANCEL)
+        sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        
+        self.SetSizer(sizer)
+        self.url_input.SetFocus()
+
+    def on_browse(self, event):
+        # Translators: Filter for video files in the file dialog
+        wildcard = _("Video Files") + " (*.mp4;*.avi;*.mkv;*.mov;*.wmv;*.flv;*.webm)|*.mp4;*.avi;*.mkv;*.mov;*.wmv;*.flv;*.webm"
+        # Translators: Title of the file dialog for selecting a video
+        with wx.FileDialog(self, _("Select Local Video"), wildcard=wildcard, style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dlg:
+            if dlg.ShowModal() == wx.ID_OK:
+                self.local_path = dlg.GetPath()
+                self.url_input.SetValue(self.local_path)
+
+    def on_action_change(self, event):
+        is_srt = (self.action_choice.GetSelection() == 1)
+        self.chars_as_sub_check.Show(is_srt)
+        self.disclaimer_check.Show(is_srt)
+        self.Layout()
+
+class VideoSRTProgressDialog(wx.Dialog):
+    def __init__(self, parent, regenerate_cb=None, original_path=None):
+        # Translators: Title of the progress dialog when generating SRT
+        title = _("{name} - Generating Audio Description").format(name=ADDON_NAME)
+        super().__init__(parent, title=title, size=(550, 480), style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        self.srt_content = None
+        self.abort = False
+        self.regenerate_cb = regenerate_cb
+        self.original_path = original_path
+        self.file_uri = None
+        self.is_srt_done = False
+        
+        sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # Translators: Label for the status log text box
+        lbl = wx.StaticText(self, label=_("Process Status / Subtitle Content:"))
+        sizer.Add(lbl, 0, wx.ALL, 10)
+        self.txt_status = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2)
+        sizer.Add(self.txt_status, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        hbox_voice = wx.BoxSizer(wx.HORIZONTAL)
+        # Translators: Label for selecting the offline Windows TTS voice
+        self.lbl_voice = wx.StaticText(self, label=_("Offline Narration Voice:"))
+        hbox_voice.Add(self.lbl_voice, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.voice_sel = wx.Choice(self, choices=[])
+        self.voice_sel.Bind(wx.EVT_CHOICE, self.on_voice_change)
+        hbox_voice.Add(self.voice_sel, 1, wx.EXPAND)
+        self.voice_sel.Disable()
+        sizer.Add(hbox_voice, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 10)
+
+        self.hbox_variant = wx.BoxSizer(wx.HORIZONTAL)
+        # Translators: Label for selecting the eSpeak voice variant
+        self.lbl_variant = wx.StaticText(self, label=_("eSpeak Voice Variant:"))
+        self.hbox_variant.Add(self.lbl_variant, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        
+        self.espeak_variant_sel = wx.ComboBox(self, style=wx.TE_PROCESS_ENTER)
+        self.espeak_variant_sel.Bind(wx.EVT_TEXT, self.onModelFilter)
+        for vname, vid in self._get_espeak_variants():
+            self.espeak_variant_sel.Append(vname, vid)
+        if self.espeak_variant_sel.GetCount() > 0:
+            self.espeak_variant_sel.SetSelection(0)
+            
+        self.hbox_variant.Add(self.espeak_variant_sel, 1, wx.EXPAND)
+        
+        # Translators: Button to download missing eSpeak-NG
+        self.btn_download_espeak = wx.Button(self, label=_("Download eSpeak-NG"))
+        self.btn_download_espeak.Bind(wx.EVT_BUTTON, self.on_download_espeak)
+        self.hbox_variant.Add(self.btn_download_espeak, 1, wx.EXPAND)
+        
+        sizer.Add(self.hbox_variant, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 10)
+
+        self.lbl_variant.Show(False)
+        self.espeak_variant_sel.Show(False)
+        self.btn_download_espeak.Show(False)
+        self.espeak_variant_sel.Disable()
+        self.btn_download_espeak.Disable()
+
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        # Translators: Button to save the generated SRT file
+        self.btn_save = wx.Button(self, label=_("&Save SRT"))
+        self.btn_save.Disable()
+        self.btn_save.Bind(wx.EVT_BUTTON, self.on_save)
+
+        # Translators: Button to generate a synced MP3 narration using offline TTS
+        self.btn_generate_mp3 = wx.Button(self, label=_("&Generate Synced Narration (MP3)"))
+        self.btn_generate_mp3.Disable()
+        self.btn_generate_mp3.Bind(wx.EVT_BUTTON, self.on_generate_mp3)
+
+        # Translators: Button to regenerate the audio description
+        self.btn_regenerate = wx.Button(self, label=_("&Regenerate"))
+        self.btn_regenerate.Disable()
+        self.btn_regenerate.Bind(wx.EVT_BUTTON, self.on_regenerate)
+
+        # Translators: Button to close the dialog
+        self.btn_close = wx.Button(self, wx.ID_CANCEL, label=_("&Close / Cancel"))
+        self.btn_close.Bind(wx.EVT_BUTTON, self.on_close)
+
+        btn_sizer.Add(self.btn_save, 0, wx.RIGHT, 5)
+        btn_sizer.Add(self.btn_generate_mp3, 0, wx.RIGHT, 5)
+        btn_sizer.Add(self.btn_regenerate, 0, wx.RIGHT, 5)
+        btn_sizer.Add(self.btn_close, 0)
+        sizer.Add(btn_sizer, 0, wx.ALIGN_CENTER | wx.ALL, 10)
+
+        self.SetSizer(sizer)
+        self.CenterOnParent()
+        self.Bind(wx.EVT_CLOSE, self.on_close)
+
+        # Translators: Initial status message in the text box
+        self.update_status(_("Initializing..."))
+        self.txt_status.SetFocus()
+        
+        threading.Thread(target=self._load_offline_voices, daemon=True).start()
+
+    def _get_espeak_variants(self):
+        espeak_dir = os.path.join(lib_dir, "espeak-ng", "espeak-ng-data", "voices", "!v")
+        variants = []
+        
+        if os.path.exists(espeak_dir):
+            try:
+                for f in sorted(os.listdir(espeak_dir)):
+                    file_path = os.path.join(espeak_dir, f)
+                    if os.path.isfile(file_path) and not f.startswith('.'):
+                        vid = f
+                        vname = vid.capitalize()
+                        
+                        try:
+                            with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
+                                for line in file:
+                                    line_clean = line.strip()
+                                    if line_clean.lower().startswith("name "):
+                                        extracted_name = line_clean[5:].strip()
+                                        if extracted_name:
+                                            vname = extracted_name.capitalize()
+                                            break
+                        except Exception:
+                            pass
+                            
+                        variants.append((vname, vid))
+            except Exception as e:
+                log.error(f"Failed to dynamically parse espeak variants: {e}")
+                
+        return variants
+
+    def _update_variant_visibility(self):
+        sel = self.voice_sel.GetSelection()
+        if sel != wx.NOT_FOUND:
+            voice_id = self.voice_sel.GetClientData(sel)
+            is_espeak = str(voice_id).startswith("espeak")
+            
+            if is_espeak:
+                exe_path = os.path.join(lib_dir, "espeak-ng", "espeak-ng.exe")
+                if os.path.exists(exe_path):
+                    self.lbl_variant.Show(True)
+                    self.btn_download_espeak.Show(False)
+                    self.espeak_variant_sel.Show(True)
+                    
+                    current_vid = None
+                    variants = self._get_espeak_variants()
+                    
+                    if self.espeak_variant_sel.GetCount() == 0:
+                        for vname, vid in variants:
+                            self.espeak_variant_sel.Append(vname, vid)
+                    
+                    is_first_run = not hasattr(self, "_first_variant_run")
+                    if is_first_run:
+                        self._first_variant_run = False
+                        
+                    if not is_first_run:
+                        v_sel = self.espeak_variant_sel.GetSelection()
+                        if v_sel != wx.NOT_FOUND and v_sel < len(variants):
+                            current_vid = variants[v_sel][1]
+                    
+                    if not current_vid:
+                        try:
+                            import synthDriverHandler
+                            synth = synthDriverHandler.getSynth()
+                            if synth.name == "espeak":
+                                current_vid = getattr(synth, "variant", "max")
+                            else:
+                                current_vid = "max"
+                        except Exception:
+                            current_vid = "max"
+                            
+                    match_idx = 0
+                    for i, (vname, vid) in enumerate(variants):
+                        if vid == current_vid:
+                            match_idx = i
+                            break
+                            
+                    if self.espeak_variant_sel.GetCount() > 0:
+                        self.espeak_variant_sel.SetSelection(match_idx)
+                        
+                    if self.is_srt_done:
+                        self.espeak_variant_sel.Enable()
+                        self.btn_generate_mp3.Enable()
+                    else:
+                        self.espeak_variant_sel.Disable()
+                        self.btn_generate_mp3.Disable()
+                else:
+                    self.lbl_variant.Show(False)
+                    self.espeak_variant_sel.Show(False)
+                    self.btn_download_espeak.Show(True)
+                    self.btn_generate_mp3.Disable()
+                    if self.is_srt_done:
+                        self.btn_download_espeak.Enable()
+                    else:
+                        self.btn_download_espeak.Disable()
+            else:
+                self.lbl_variant.Show(False)
+                self.espeak_variant_sel.Show(False)
+                self.btn_download_espeak.Show(False)
+                if self.is_srt_done:
+                    self.btn_generate_mp3.Enable()
+                else:
+                    self.btn_generate_mp3.Disable()
+            self.Layout()
+
+    def onModelFilter(self, event):
+        cb = event.GetEventObject()
+        if cb.IsFrozen(): return
+        
+        sel = cb.GetSelection()
+        if sel != wx.NOT_FOUND: return
+
+        query = cb.GetValue()
+        query_low = query.lower()
+        
+        if not hasattr(cb, '_all_models_backup') and cb.GetCount() > 0:
+            cb._all_models_backup = [(cb.GetString(i), cb.GetClientData(i)) for i in range(cb.GetCount())]
+            
+        backup = getattr(cb, '_all_models_backup', [])
+        
+        if not query_low:
+            if cb.GetCount() != len(backup):
+                cb.Freeze()
+                cb.Clear()
+                for name, data in backup:
+                    cb.Append(name, data)
+                cb.SetValue("")
+                cb.Thaw()
+            return
+
+        filtered = [(name, data) for name, data in backup if query_low in name.lower()]
+        
+        cb.Freeze()
+        cb.Clear()
+        for name, data in filtered:
+            cb.Append(name, data)
+        
+        cb.ChangeValue(query) 
+        cb.SetInsertionPointEnd()
+        cb.Thaw()
+        
+        if filtered:
+            cb.Popup()
+
+
+    def _generate_espeak_wav(self, text, voice_id, espeak_variant, output_wav):
+        espeak_exe = os.path.join(lib_dir, "espeak-ng", "espeak-ng.exe")
+        if not os.path.exists(espeak_exe):
+            return False
+
+        espeak_voice = "en"
+        if voice_id.startswith("espeak_") and voice_id != "espeak_current":
+            espeak_voice = voice_id.split("_")[1]
+
+        espeak_speed = "175"
+        espeak_pitch = "50"
+        espeak_volume = "100"
+        espeak_inflection = "75"
+
+        if voice_id == "espeak_current":
+            try:
+                import synthDriverHandler
+                synth = synthDriverHandler.getSynth()
+                if synth.name == "espeak":
+                    v = getattr(synth, "voice", "en")
+                    if '\\' in v:
+                        v = v.split('\\')[-1]
+                    espeak_voice = v
+                    
+                    nvda_rate = getattr(synth, "rate", 50)
+                    espeak_speed = str(int(80 + (nvda_rate / 100.0) * 370))
+                    
+                    nvda_pitch = getattr(synth, "pitch", 50)
+                    espeak_pitch = str(int(nvda_pitch))
+                    
+                    nvda_volume = getattr(synth, "volume", 100)
+                    espeak_volume = str(int((nvda_volume / 100.0) * 200))
+                    nvda_inflection = getattr(synth, "inflection", 75)
+                    espeak_inflection = str(int(nvda_inflection))
+            except Exception:
+                pass
+
+        ssml_text = f'<speak><prosody range="{espeak_inflection}">{text}</prosody></speak>'
+
+        if espeak_variant:
+            espeak_voice = espeak_voice.split('+')[0]
+            espeak_voice += f"+{espeak_variant}"
+
+        try:
+            subprocess.run(
+                [
+                    espeak_exe, 
+                    "-v", espeak_voice,
+                    "-s", espeak_speed,
+                    "-p", espeak_pitch,
+                    "-a", espeak_volume,
+                    "-m",
+                    "--stdin",
+                    "-w", output_wav,
+                ],
+                input=ssml_text.encode('utf-8'),
+                capture_output=True,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            )
+            return os.path.exists(output_wav) and os.path.getsize(output_wav) > 44
+        except Exception as e:
+            log.error(f"eSpeak generation failed: {e}")
+            return False
+
+    def on_voice_change(self, event):
+        self._update_variant_visibility()
+
+
+
+    def on_download_espeak(self, event):
+        threading.Thread(target=self._download_espeak_worker, daemon=True).start()
+
+    def _download_espeak_worker(self):
+        espeak_dir = os.path.join(lib_dir, "espeak-ng")
+        exe_path = os.path.join(espeak_dir, "espeak-ng.exe")
+        wx.CallAfter(self.btn_download_espeak.Disable)
+        try:
+            # Translators: Status message when downloading eSpeak-NG
+            wx.CallAfter(self.update_status, _("Downloading eSpeak-NG, please wait..."))
+            download_url = "https://raw.githubusercontent.com/mahmoodhozhabri/VisionAssistantPro/main/eSpeak-NG-portable.zip"
+            
+            opener = get_proxy_opener(download_url)
+            req = request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+            zip_path = os.path.join(lib_dir, "espeak-temp.zip")
+            
+            with opener.open(req, timeout=300) as response:
+                with open(zip_path, 'wb') as f:
+                    shutil.copyfileobj(response, f)
+            
+            # Translators: Status message when extracting eSpeak-NG
+            wx.CallAfter(self.update_status, _("Extracting eSpeak-NG..."))
+            os.makedirs(espeak_dir, exist_ok=True)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(espeak_dir)
+            try: os.remove(zip_path)
+            except Exception: pass
+            
+            if os.path.exists(exe_path):
+                # Translators: Success message after eSpeak-NG download completes
+                wx.CallAfter(self.update_status, _("eSpeak-NG downloaded successfully!"))
+                if self.is_srt_done:
+                    wx.CallAfter(self.update_status, self.srt_content)
+                wx.CallAfter(self._update_variant_visibility)
+        except Exception as e:
+            log.error(f"eSpeak download failed: {e}", exc_info=True)
+            # Translators: Error message when eSpeak-NG download fails
+            wx.CallAfter(show_error_dialog, _("Failed to download eSpeak-NG: {error}").format(error=str(e)))
+            wx.CallAfter(self.btn_download_espeak.Enable)
+
+    def _load_offline_voices(self):
+        try:
+            voice_list = []
+            target_selection = None
+            
+            try:
+                import synthDriverHandler
+                synth = synthDriverHandler.getSynth()
+                synth_name = getattr(synth, "name", "")
+                current_nvda_voice = getattr(synth, "voice", "")
+            except Exception:
+                synth_name = ""
+                current_nvda_voice = ""
+
+            if synth_name == "espeak":
+                # Translators: Option for eSpeak voice matching the user's current NVDA voice settings
+                voice_list.append(("espeak_current", _("eSpeak (Current NVDA Language)")))
+                target_selection = "espeak_current"
+            else:
+                # Translators: Option for default English eSpeak voice
+                voice_list.append(("espeak_en", _("eSpeak (English Default)")))
+                
+            try:
+                import comtypes.client
+                engine = comtypes.client.CreateObject("SAPI.SpVoice")
+                voices = engine.GetVoices()
+                for i in range(voices.Count):
+                    voice = voices.Item(i)
+                    desc = voice.GetDescription()
+                    vid = f"sapi5_{voice.Id}"
+                    voice_list.append((vid, f"SAPI5 - {desc}"))
+                    
+                    if synth_name == "sapi5" and current_nvda_voice == voice.Id:
+                        target_selection = vid
+            except Exception as e:
+                log.error(f"SAPI5 load failed: {e}")
+
+            wx.CallAfter(self._populate_voices, voice_list, target_selection)
+        except Exception as e:
+            log.error(f"Failed to load offline voices: {e}", exc_info=True)
+
+    def _populate_voices(self, voice_list, target_selection):
+        try:
+            self.voice_sel.Clear()
+            for vid, vname in voice_list:
+                self.voice_sel.Append(vname, vid)
+                
+            if target_selection:
+                for i in range(self.voice_sel.GetCount()):
+                    if self.voice_sel.GetClientData(i) == target_selection:
+                        self.voice_sel.SetSelection(i)
+                        self._update_variant_visibility()
+                        return
+                        
+            if self.voice_sel.GetCount() > 0:
+                self.voice_sel.SetSelection(0)
+                self._update_variant_visibility()
+        except Exception:
+            pass
+        finally:
+            if self.is_srt_done:
+                self.voice_sel.Enable()
+
+    def update_status(self, msg):
+        if self.abort: return
+        self.txt_status.SetValue(msg)
+        if _vision_assistant_instance:
+            _vision_assistant_instance.current_status = msg
+        ui.message(msg)
+
+    def on_finished(self, srt_content):
+        if self.abort: return
+        self.srt_content = srt_content
+        self.is_srt_done = True
+        self.txt_status.SetValue(srt_content)
+        self.btn_save.Enable()
+        self.btn_regenerate.Enable()
+        self.btn_generate_mp3.Enable()
+        self.voice_sel.Enable()
+        self._update_variant_visibility()
+        self.txt_status.SetFocus()
+        tones.beep(1000, 100)
+        # Translators: Success announcement when generation is complete
+        ui.message(_("Audio description generated successfully! You can read the subtitle content in the text box."))
+
+    def on_error(self, err_msg):
+        if self.abort: return
+        self.is_srt_done = True
+        # Translators: Status message when an error occurs during SRT generation
+        self.update_status(_("Error: {err}").format(err=err_msg))
+        self.btn_regenerate.Enable()
+        self.btn_generate_mp3.Disable()
+        self.voice_sel.Enable()
+        self._update_variant_visibility()
+
+    def on_regenerate(self, event):
+        self.srt_content = None
+        self.abort = False
+        self.is_srt_done = False
+        self.btn_save.Disable()
+        self.btn_regenerate.Disable()
+        self.btn_generate_mp3.Disable()
+        self.voice_sel.Disable()
+        self.espeak_variant_sel.Disable()
+        self.btn_download_espeak.Disable()
+        # Translators: Status message when restarting generation
+        self.update_status(_("Re-initializing..."))
+        if self.regenerate_cb:
+            self.regenerate_cb(self)
+
+    def on_save(self, event):
+        if not self.srt_content: return
+        
+        default_name = "Audio_Description.srt"
+        if getattr(self, "original_path", None):
+            if str(self.original_path).startswith("http"):
+                default_name = "Online_Video_Description.srt"
+            else:
+                default_name = os.path.splitext(os.path.basename(self.original_path))[0] + ".srt"
+
+        gui.mainFrame.prePopup()
+        try:
+            # Translators: File dialog title for saving the generated SRT file
+            with wx.FileDialog(gui.mainFrame, _("Save Audio Description"), wildcard="SRT Files (*.srt)|*.srt", defaultFile=default_name, style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as dlg:
+                if dlg.ShowModal() == wx.ID_OK:
+                    path = dlg.GetPath()
+                else:
+                    path = None
+        finally:
+            gui.mainFrame.postPopup()
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(self.srt_content)
+                # Translators: Success message when SRT file is saved
+                ui.message(_("SRT file saved successfully."))
+            except Exception as e:
+                show_error_dialog(str(e))
+
+    def _parse_srt(self, srt_text):
+        blocks = []
+        parts = re.split(r'\n\s*\n', srt_text.strip())
+        for part in parts:
+            lines = [l.strip() for l in part.strip().split('\n') if l.strip()]
+            if len(lines) < 3:
+                continue
+            time_line = lines[1]
+            if '-->' not in time_line:
+                continue
+            try:
+                start_str, end_str = [t.strip() for t in time_line.split('-->')]
+                start_ms = self._time_to_ms(start_str)
+                end_ms = self._time_to_ms(end_str)
+                text = ' '.join(lines[2:])
+                blocks.append({'start_ms': start_ms, 'end_ms': end_ms, 'text': text})
+            except Exception:
+                continue
+        return blocks
+
+    def _time_to_ms(self, t):
+        h, m, rest = t.replace(',', '.').split(':')
+        s, ms = rest.split('.')
+        return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms.ljust(3, '0')[:3])
+
+    def _get_wav_duration(self, wav_path):
+        try:
+            with wave.open(wav_path, 'rb') as wf:
+                return wf.getnframes() / wf.getframerate()
+        except Exception:
+            return 0.0
+
+    def _generate_sapi5_wav(self, text, real_voice_id, output_wav):
+        try:
+            import comtypes.client
+            engine = comtypes.client.CreateObject("SAPI.SpVoice")
+            voices = engine.GetVoices()
+            for i in range(voices.Count):
+                if voices.Item(i).Id == real_voice_id:
+                    engine.Voice = voices.Item(i)
+                    break
+            
+            stream = comtypes.client.CreateObject("SAPI.SpFileStream")
+            stream.Open(output_wav, 3)
+            engine.AudioOutputStream = stream
+            engine.Speak(text)
+            stream.Close()
+            return os.path.exists(output_wav) and os.path.getsize(output_wav) > 44
+        except Exception as e:
+            log.error(f"SAPI5 TTS to WAV failed: {e}")
+            return False
+
+    def on_generate_mp3(self, event):
+        if not self.srt_content:
+            return
+        blocks = self._parse_srt(self.srt_content)
+        if not blocks:
+            # Translators: Error when SRT parsing finds no valid subtitle blocks
+            show_error_dialog(_("No valid subtitle blocks found in the SRT content."))
+            return
+
+        ffmpeg_path = None
+        if _vision_assistant_instance:
+            ffmpeg_path = _vision_assistant_instance._ensure_ffmpeg()
+        if not ffmpeg_path:
+            return
+
+        sel = self.voice_sel.GetSelection()
+        if sel == wx.NOT_FOUND:
+            # Translators: Error when no voice is selected
+            show_error_dialog(_("Please select an offline voice from the list."))
+            return
+            
+        voice_id = self.voice_sel.GetClientData(sel)
+        
+        espeak_variant = ""
+        if str(voice_id).startswith("espeak"):
+            v_sel = self.espeak_variant_sel.GetSelection()
+            if v_sel != wx.NOT_FOUND:
+                espeak_variant = self.espeak_variant_sel.GetClientData(v_sel)
+
+        default_name = "Audio_Narration.mp3"
+        video_path = None
+        
+        if hasattr(self, "local_path") and self.local_path and os.path.exists(self.local_path):
+            video_path = self.local_path
+        elif hasattr(self, "original_path") and self.original_path and os.path.exists(self.original_path):
+            video_path = self.original_path
+
+        has_video = bool(video_path)
+
+        if not has_video:
+            default_name = "Online_Video_Narration.mp3"
+            is_online = True
+        else:
+            if getattr(self, "original_path", None) and not str(self.original_path).startswith("http"):
+                default_name = os.path.splitext(os.path.basename(self.original_path))[0] + "_narration.mp3"
+            else:
+                default_name = "Audio_Narration.mp3"
+            is_online = False
+
+        mode_selection = 0
+        apply_ducking = False
+
+        if is_online:
+            gui.mainFrame.prePopup()
+            try:
+                # Translators: Warning prompt for online videos indicating that the output will only contain narration.
+                warn_msg = _("Because the source is an online video, the final file will ONLY contain the AI voice narration (synced to the timestamps) and will NOT include the original background audio of the video. Do you want to proceed?")
+                # Translators: Title of the warning dialog when opening an online video link.
+                with wx.MessageDialog(self, warn_msg, _("Online Video Mode"), wx.YES_NO | wx.ICON_WARNING) as dlg:
+                    if dlg.ShowModal() != wx.ID_YES:
+                        return
+            finally:
+                gui.mainFrame.postPopup()
+        else:
+            # Translators: Title of the narration mode selection dialog.
+            title_dlg = _("Select Narration Mode")
+            # Translators: Instruction prompt for narration mode selection.
+            msg_dlg = _("Choose how the narration should be mixed with the video audio:")
+            choices_dlg = [
+                # Translators: Option for mixing voice directly over the video without pausing.
+                _("Standard AD (Mix voice directly over audio - No Pausing)"),
+                # Translators: Option for pausing the background video audio during descriptions.
+                _("Extended AD (Pause background audio during descriptions)")
+            ]
+            
+            gui.mainFrame.prePopup()
+            try:
+                with wx.SingleChoiceDialog(self, msg_dlg, title_dlg, choices_dlg) as dlg:
+                    if dlg.ShowModal() != wx.ID_OK:
+                        return
+                    mode_selection = dlg.GetSelection()
+            finally:
+                gui.mainFrame.postPopup()
+
+            if mode_selection == 0:
+                gui.mainFrame.prePopup()
+                try:
+                    # Translators: Prompt asking whether to lower the background video audio during the descriptions.
+                    duck_msg = _("Do you want to fade/duck the background video audio during the descriptions?")
+                    # Translators: Title for the audio ducking prompt.
+                    duck_title = _("Audio Ducking")
+                    with wx.MessageDialog(self, duck_msg, duck_title, wx.YES_NO | wx.ICON_QUESTION) as dlg:
+                        if dlg.ShowModal() == wx.ID_YES:
+                            apply_ducking = True
+                finally:
+                    gui.mainFrame.postPopup()
+
+        gui.mainFrame.prePopup()
+        try:
+            # Translators: File dialog title for saving audio narration
+            with wx.FileDialog(
+                gui.mainFrame,
+                # Translators: Button label or menu item to save the generated AI audio narration synced to the video.
+                _("Save Synced Narration"),
+                wildcard="MP3 Files (*.mp3)|*.mp3",
+                defaultFile=default_name,
+                style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+            ) as dlg:
+                if dlg.ShowModal() == wx.ID_OK:
+                    output_path = dlg.GetPath()
+                else:
+                    output_path = None
+        finally:
+            gui.mainFrame.postPopup()
+
+        if not output_path:
+            return
+        if not output_path.lower().endswith('.mp3'):
+            output_path += '.mp3'
+
+        self.btn_generate_mp3.Disable()
+        self.btn_regenerate.Disable()
+        self.btn_save.Disable()
+        self.voice_sel.Disable()
+        self.espeak_variant_sel.Disable()
+        self.btn_download_espeak.Disable()
+        
+        # Translators: Status message when narration generation starts
+        ui.message(_("Generating offline synced narration. This may take a few moments..."))
+        threading.Thread(target=self._offline_tts_worker, args=(blocks, output_path, voice_id, espeak_variant, ffmpeg_path, video_path, mode_selection, apply_ducking), daemon=True).start()
+
+    def _detect_silences(self, ffmpeg_path, video_path, noise_db=-32, duration_sec=0.3):
+        startupinfo = None
+        creationflags = 0
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            creationflags = 0x08000000
+
+        vol_cmd = [
+            ffmpeg_path, "-y", "-i", video_path, "-vn",
+            "-af", "volumedetect", "-f", "null", "-"
+        ]
+        vol_res = subprocess.run(vol_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo, creationflags=creationflags)
+        vol_stderr = vol_res.stderr.decode('utf-8', errors='ignore')
+        
+        mean_volume = -20.0
+        for line in vol_stderr.splitlines():
+            if "mean_volume:" in line:
+                try:
+                    mean_volume = float(line.split("mean_volume:")[1].strip().split()[0])
+                except Exception:
+                    pass
+                break
+        
+        dynamic_noise_db = max(-50.0, min(-20.0, mean_volume - 15.0))
+
+        cmd = [
+            ffmpeg_path, "-y", "-i", video_path, "-vn",
+            "-af", f"highpass=f=200,lowpass=f=3000,afftdn,silencedetect=noise={dynamic_noise_db:.1f}dB:d={duration_sec}",
+            "-f", "null", "-"
+        ]
+
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo, creationflags=creationflags)
+        stderr_data = res.stderr.decode('utf-8', errors='ignore')
+        
+        silences = []
+        current_start = None
+        
+        for line in stderr_data.splitlines():
+            if "silence_start:" in line:
+                try:
+                    val = line.split("silence_start:")[1].strip().split()[0]
+                    current_start = int(float(val) * 1000)
+                except Exception:
+                    pass
+            elif "silence_end:" in line:
+                if current_start is not None:
+                    try:
+                        val = line.split("silence_end:")[1].strip().split("|")[0].strip().split()[0]
+                        end_ms = int(float(val) * 1000)
+                        silences.append((current_start, end_ms))
+                    except Exception:
+                        pass
+                    current_start = None
+        return silences
+
+    def _find_best_pause_time(self, target_ms, silences, max_shift_ms=3000):
+        if not silences:
+            return target_ms
+
+        for start, end in silences:
+            if start <= target_ms <= end:
+                return (start + end) // 2
+        
+        best_time = target_ms
+        min_diff = float('inf')
+        
+        for start, end in silences:
+            midpoint = (start + end) // 2
+            
+            if target_ms < start:
+                dist = start - target_ms
+            elif target_ms > end:
+                dist = target_ms - end
+            else:
+                dist = 0
+                
+            if dist < min_diff and dist <= max_shift_ms:
+                min_diff = dist
+                best_time = midpoint
+                
+        return best_time
+
+    def _offline_tts_worker(self, blocks, output_path, voice_id, espeak_variant, ffmpeg_path, video_path, mode_selection, apply_ducking=False):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            import comtypes
+            try:
+                comtypes.CoInitialize()
+            except Exception:
+                pass
+        except ImportError:
+            pass
+
+        try:
+            has_video = False
+            if video_path and os.path.exists(video_path):
+                has_video = True
+            else:
+                video_path = None
+                mode_selection = 0
+
+            orig_audio_wav = os.path.join(temp_dir, "original_audio.wav")
+            orig_bytes = None
+            total_orig_ms = 0
+            silences = []
+
+            if has_video:
+                # Translators: Status message shown when extracting the original video audio tracks.
+                wx.CallAfter(self.update_status, _("Extracting original video audio..."))
+                
+                subprocess.run(
+                    [
+                        ffmpeg_path, "-y", 
+                        "-i", video_path, 
+                        "-vn", 
+                        "-acodec", "pcm_s16le", 
+                        "-ar", "24000", 
+                        "-ac", "1", 
+                        orig_audio_wav
+                    ],
+                    capture_output=True,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                )
+
+                if not os.path.exists(orig_audio_wav):
+                    # Translators: Error message shown when extraction of the video's original audio fails.
+                    wx.CallAfter(show_error_dialog, _("Failed to extract video audio."))
+                    return
+
+                with wave.open(orig_audio_wav, "rb") as wf:
+                    orig_bytes = wf.readframes(wf.getnframes())
+                    total_orig_ms = int((len(orig_bytes) / 48))
+
+                if mode_selection == 1:
+                    # Translators: Status message shown when analyzing the video's audio to detect periods of silence.
+                    wx.CallAfter(self.update_status, _("Analyzing video for natural silences..."))
+                    silences = self._detect_silences(ffmpeg_path, video_path, noise_db=-32, duration_sec=0.3)
+            else:
+                total_orig_ms = blocks[-1]['end_ms'] + 2000
+
+            for i, block in enumerate(blocks):
+                if self.abort: return
+                text = block['text'].replace('*', '').replace('_', '')
+                if not text.strip(): continue
+                
+                # Translators: Progress message during narration generation. {current} is the current block number, {total} is total blocks.
+                progress_msg = _("Generating narration: part {current} of {total}...").format(current=i + 1, total=len(blocks))
+                wx.CallAfter(self.update_status, progress_msg)
+
+                wav_path = os.path.join(temp_dir, f"block_{i:04d}.wav")
+                success = False
+                
+                if str(voice_id).startswith("espeak_"):
+                    success = self._generate_espeak_wav(text, voice_id, espeak_variant, wav_path)
+                elif str(voice_id).startswith("sapi5_"):
+                    real_id = voice_id[6:] 
+                    success = self._generate_sapi5_wav(text, real_id, wav_path)
+                
+                if success:
+                    resampled_wav = os.path.join(temp_dir, f"block_{i:04d}_r.wav")
+                    subprocess.run(
+                        [
+                            ffmpeg_path, "-y",
+                            "-i", wav_path,
+                            "-ar", "24000",
+                            "-ac", "1",
+                            "-c:a", "pcm_s16le",
+                            resampled_wav
+                        ],
+                        capture_output=True,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                    )
+                    if os.path.exists(resampled_wav):
+                        block['wav_path'] = resampled_wav
+                    else:
+                        block['wav_path'] = wav_path
+                else:
+                    block['wav_path'] = None
+
+            final_wav_path = os.path.join(temp_dir, "final_mix.wav")
+
+            if mode_selection == 0:
+                # Translators: Status message when combining audio blocks
+                wx.CallAfter(self.update_status, _("Arranging audio track... Please wait."))
+                
+                tts_base_path = os.path.join(temp_dir, "tts_base.wav")
+                final_end_s = total_orig_ms / 1000.0
+                subprocess.run(
+                    [
+                        ffmpeg_path, "-y", "-f", "lavfi", "-t", str(final_end_s),
+                        "-i", "anullsrc=r=24000:cl=mono", "-ar", "24000", "-ac", "1", tts_base_path
+                    ],
+                    capture_output=True,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                )
+
+                wav_entries = []
+                last_end_ms = 0
+                for i, block in enumerate(blocks):
+                    w_path = block.get('wav_path')
+                    if w_path and os.path.exists(w_path):
+                        try:
+                            with wave.open(w_path, 'rb') as wf:
+                                dur_ms = int((wf.getnframes() / wf.getframerate()) * 1000)
+                        except Exception:
+                            dur_ms = 0
+                            
+                        start_ms = int(block['start_ms'])
+                        if start_ms < last_end_ms:
+                            start_ms = last_end_ms + 150
+                            
+                        wav_entries.append({
+                            'path': w_path,
+                            'start_ms': start_ms
+                        })
+                        last_end_ms = start_ms + dur_ms
+
+                current_tts_mix = tts_base_path
+                batch_size = 40
+                for batch_start in range(0, len(wav_entries), batch_size):
+                    batch = wav_entries[batch_start:batch_start + batch_size]
+                    batch_out = os.path.join(temp_dir, f"tts_mix_{batch_start}.wav")
+                    
+                    cmd = [ffmpeg_path, "-y", "-i", current_tts_mix]
+                    filter_parts = []
+                    
+                    for idx, entry in enumerate(batch):
+                        cmd.extend(["-i", entry['path']])
+                        delay_ms = int(entry['start_ms'])
+                        filter_parts.append(f"[{idx+1}:a]adelay={delay_ms}|{delay_ms}[a{idx+1}]")
+                        
+                    mix_inputs = "[0:a]" + "".join(f"[a{i+1}]" for i in range(len(batch)))
+                    filter_parts.append(f"{mix_inputs}amix=inputs={len(batch)+1}:duration=longest:normalize=0[out]")
+                    
+                    cmd.extend(["-filter_complex", ";".join(filter_parts), "-map", "[out]", "-ar", "24000", "-ac", "1", batch_out])
+                    subprocess.run(cmd, capture_output=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                    current_tts_mix = batch_out
+
+                if has_video:
+                    # Translators: Status message when mixing generated narration with original video audio
+                    wx.CallAfter(self.update_status, _("Mixing narration with original video audio..."))
+                    
+                    filter_complex = "[0:a][1:a]amix=inputs=2:duration=longest:normalize=0"
+                    if apply_ducking:
+                        filter_complex = "[1:a]asplit=2[sc][tts];[0:a][sc]sidechaincompress=threshold=0.05:ratio=5:attack=50:release=1000[bg];[bg][tts]amix=inputs=2:duration=longest:normalize=0"
+                        
+                    subprocess.run(
+                        [
+                            ffmpeg_path, "-y",
+                            "-i", orig_audio_wav,
+                            "-i", current_tts_mix,
+                            "-filter_complex", filter_complex,
+                            "-ar", "24000", "-ac", "1",
+                            final_wav_path
+                        ],
+                        capture_output=True,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                    )
+                else:
+                    final_wav_path = current_tts_mix
+
+            else:
+                # Translators: Status message when slicing and splicing the audio file with natural pauses.
+                wx.CallAfter(self.update_status, _("Splicing audio based on natural pauses..."))
+                output_bytes = bytearray()
+                last_copied_ms = 0
+
+                for block in blocks:
+                    if self.abort: return
+                    if not block.get('wav_path') or not os.path.exists(block['wav_path']):
+                        continue
+
+                    raw_start_ms = block['start_ms']
+                    smart_start_ms = self._find_best_pause_time(raw_start_ms, silences, max_shift_ms=3000)
+
+                    if smart_start_ms > total_orig_ms:
+                        smart_start_ms = total_orig_ms
+
+                    if smart_start_ms > last_copied_ms:
+                        chunk_bytes = orig_bytes[last_copied_ms * 48 : smart_start_ms * 48]
+                        output_bytes.extend(chunk_bytes)
+                        last_copied_ms = smart_start_ms
+
+                    with wave.open(block['wav_path'], 'rb') as wf_block:
+                        tts_frames = wf_block.readframes(wf_block.getnframes())
+                        output_bytes.extend(tts_frames)
+
+                if last_copied_ms < total_orig_ms:
+                    remaining_bytes = orig_bytes[last_copied_ms * 48 :]
+                    output_bytes.extend(remaining_bytes)
+
+                with wave.open(final_wav_path, "wb") as wf_out:
+                    wf_out.setnchannels(1)
+                    wf_out.setsampwidth(2)
+                    wf_out.setframerate(24000)
+                    wf_out.writeframes(output_bytes)
+
+            # Translators: Status message shown when converting the final raw WAV mix to MP3 format.
+            wx.CallAfter(self.update_status, _("Converting final audio to MP3..."))
+            subprocess.run(
+                [
+                    ffmpeg_path, "-y",
+                    "-i", final_wav_path,
+                    "-codec:a", "libmp3lame",
+                    "-q:a", "2",
+                    output_path
+                ],
+                capture_output=True,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            )
+
+            if os.path.exists(output_path):
+                wx.CallAfter(self.update_status, self.srt_content)
+                # Translators: Message spoken on successful save of the synced narration.
+                ui.message(_("Synced extended narration with silence detection saved successfully."))
+                # Translators: Success message shown when narration generation is successfully completed with silence detection.
+                wx.CallAfter(wx.MessageBox, _("Synced extended audio narration file generated successfully with smart silence matching."), _("Success"), wx.OK | wx.ICON_INFORMATION)
+            else:
+                # Translators: Error message shown when the final MP3 conversion fails.
+                wx.CallAfter(show_error_dialog, _("Failed to generate the final MP3 file."))
+
+        except Exception as e:
+            log.error(f"Synced narration insertion failed: {e}", exc_info=True)
+            # Translators: Error message shown when narration generation fails.
+            wx.CallAfter(show_error_dialog, _("Narration Error: {error}").format(error=e))
+        finally:
+            try:
+                import comtypes
+                comtypes.CoUninitialize()
+            except Exception:
+                pass
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
+            wx.CallAfter(self.btn_generate_mp3.Enable)
+            wx.CallAfter(self.btn_regenerate.Enable)
+            wx.CallAfter(self.btn_save.Enable)
+            wx.CallAfter(self.voice_sel.Enable)
+            wx.CallAfter(self._update_variant_visibility)
+
+    def on_close(self, event):
+        self.abort = True
+        if _vision_assistant_instance:
+            # Translators: Status message when the addon is idle.
+            _vision_assistant_instance.current_status = _("Idle")
+        # Translators: Message announced when user cancels the process
+        ui.message(_("Process cancelled."))
+        self.Destroy()
+
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
     scriptCategory = ADDON_NAME
     
@@ -6185,6 +8282,11 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         self._last_result_data = None
         self.live_session = None
         self.live_dlg = None
+
+        self.is_video_recording = False
+        self.recording_process = None
+        self.recording_output_path = None
+        self.recording_start_time = None
 
         self.labels_cache = {}
         if os.path.exists(LABELS_FILE):
@@ -6429,6 +8531,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         self.current_status = msg
         ui.message(msg)
 
+    # Translators: Script description for Input Gestures dialog
+    @scriptHandler.script(description=_("Shows a list of available commands in the layer."))
     def script_showHelp(self, gesture):
         if self.toggling: self.finish()
     # Translators: Help text shown in a dialog listing all available commands in the Command Layer.
@@ -6441,18 +8545,30 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             "O: " + _("Performs OCR and description on the entire screen.") + "\n" +
             "V: " + _("Describes the current object (Navigator Object).") + "\n" +
             "D: " + _("Opens the Document Reader for detailed page-by-page analysis (PDF/Images).") + "\n" +
+            # Translators: Help message describing the F key shortcut in the Vision Assistant layer.
             "F: " + _("Performs smart actions (OCR or Description) on a selected image or PDF file.") + "\n" +
             "A: " + _("Transcribes a selected audio file.") + "\n" +
-            "Shift+V: " + _("Analyzes a YouTube, Instagram, Twitter or TikTok video URL.") + "\n" +
+            # Translators: Help message describing the Shift+V key shortcut in the Vision Assistant layer.
+            # Translators: Help message describing the Shift+V key shortcut in the Vision Assistant layer.
+            "Shift+V: " + _("Analyzes a local video file or an online video URL.") + "\n" +
+            "Control+V: " + _("Starts or stops local video recording of the screen.") + "\n" +
             "C: " + _("Attempts to solve a CAPTCHA on the screen or navigator object.") + "\n" +
             "S: " + _("Records voice, transcribes it using AI, and types the result.") + "\n" +
             "I: " + _("Announces the current status of the add-on.") + "\n" +
             "L: " + _("Labels the current navigator object using AI.") + "\n" +
             "Shift+L: " + _("Manages existing labels or scans the entire app to label unnamed elements.") + "\n" +
             "U: " + _("Checks for updates manually.") + "\n" +
+            # Translators: Help message describing the Space key shortcut in the Vision Assistant layer.
             "Space: " + _("Shows the last AI response in a chat dialog for review or follow-up questions.") + "\n" +
+            # Translators: Help message describing the H key shortcut in the Vision Assistant layer.
             "H: " + _("Shows a list of available commands in the layer.") + "\n" +
-            "Control+L: " + _("Starts or ends a live voice conversation with the AI assistant.")
+            "Control+L: " + _("Starts or ends a live voice conversation with the AI assistant.") + "\n" +
+            # Translators: Help message describing the Alt+S key shortcut in the Vision Assistant layer.
+            "Alt+S: " + _("Opens the Vision Assistant settings dialog.") + "\n" +
+            # Translators: Help message describing the Alt+Q key shortcut in the Vision Assistant layer.
+            "Alt+Q: " + _("Reports the number of banned Gemini API keys and their unban time.") + "\n" +
+            # Translators: Help message describing the Alt+M key shortcut in the Vision Assistant layer.
+            "Alt+M: " + _("Reports the AI models selected in advanced routing.")
         )
         # Translators: Title of the help dialog
         ui.browseableMessage(help_msg, _("{name} Help").format(name=ADDON_NAME))
@@ -6477,6 +8593,113 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             show_error_dialog(_("The Live Assistant is only supported with the Gemini provider (or a Custom provider with API type set to Gemini)."))
             return
         self._start_live_session()
+
+    # Translators: Script description for Input Gestures dialog.
+    @scriptHandler.script(description=_("Opens the Vision Assistant settings dialog."))
+    def script_openSettings(self, gesture):
+        if self.toggling: self.finish()
+        wx.CallAfter(self.on_settings_click, None)
+
+    # Translators: Script description for Input Gestures dialog.
+    @scriptHandler.script(description=_("Reports the number of Gemini API keys that have exceeded their daily quota and their reset time."))
+    def script_reportQuotaExhaustedKeys(self, gesture):
+        if self.toggling: self.finish()
+        if not AIHandler.is_gemini():
+            # Translators: Message shown when a user tries to check Gemini API quotas but another provider is active.
+            wx.CallAfter(ui.message, _("This feature is only available for Google Gemini."))
+            return
+        try:
+            import json
+            banned_str = config.conf["VisionAssistant"].get("banned_gemini_keys", "{}")
+            banned = json.loads(banned_str)
+        except Exception:
+            banned = {}
+            
+        import time
+        now = time.time()
+        
+        unique_keys = {}
+        max_time_per_key = {}
+        
+        for k_m, ban_time in list(banned.items()):
+            if now < ban_time:
+                parts = k_m.split("::")
+                k = parts[0]
+                m = parts[1] if len(parts) > 1 else "Unknown"
+                if k not in unique_keys:
+                    unique_keys[k] = []
+                unique_keys[k].append(m)
+                max_time_per_key[k] = max(max_time_per_key.get(k, 0), ban_time)
+            else:
+                del banned[k_m]
+                
+        config.conf["VisionAssistant"]["banned_gemini_keys"] = json.dumps(banned)
+        
+        if not unique_keys:
+            # Translators: Message when no API keys are out of quota
+            ui.message(_("No API keys have exceeded their daily quota."))
+            return
+            
+        model_combinations = {}
+        for k, models in unique_keys.items():
+            models.sort()
+            m_tuple = tuple(models)
+            if m_tuple not in model_combinations:
+                model_combinations[m_tuple] = []
+            model_combinations[m_tuple].append(max_time_per_key[k])
+            
+        import datetime
+        today = datetime.date.today()
+        
+        msg_parts = []
+        for m_tuple, times in model_combinations.items():
+            count = len(times)
+            max_time = max(times)
+            model_str = ", ".join(m_tuple)
+            ban_date = datetime.datetime.fromtimestamp(max_time).date()
+            time_str = time.strftime("%H:%M", time.localtime(max_time))
+            if ban_date > today:
+                # Translators: Prefix for time when the daily quota resets on the next day
+                time_str = _("tomorrow at {time}").format(time=time_str)
+            # Translators: Status message for API keys that are out of daily quota
+            msg_parts.append(_("{count} key(s) exceeded daily quota for model {model} (resets around {time_str})").format(count=count, model=model_str, time_str=time_str))
+            
+        ui.message(". ".join(msg_parts))
+
+    # Translators: Script description for Input Gestures dialog.
+    @scriptHandler.script(description=_("Reports the AI models selected in advanced routing."))
+    def script_reportSelectedModels(self, gesture):
+        if self.toggling: self.finish()
+        models = []
+        conf = config.conf["VisionAssistant"]
+        p = conf.get("active_provider", "gemini")
+        
+        m_key = "model_name" if p == "gemini" else f"{p}_model_name"
+        main_m = conf.get(m_key, "")
+        if main_m: 
+            # Translators: Prefix for main model status
+            models.append(_("Main: {model}").format(model=main_m))
+        
+        def add_adv(task, name):
+            m = conf.get(f"{p}_{task}_model", "")
+            if m and "Default" not in m and "Auto" not in m:
+                models.append(f"{name}: {m}")
+                
+        # Translators: Status prefix for specific tasks
+        add_adv("ocr", _("OCR"))
+        # Translators: Abbreviation for Speech-to-Text.
+        add_adv("stt", _("STT"))
+        # Translators: Abbreviation for Text-to-Speech.
+        add_adv("tts", _("TTS"))
+        add_adv("operator", _("Operator"))
+        add_adv("video", _("Video"))
+        add_adv("live", _("Live"))
+        
+        if not models:
+            # Translators: Message when no specific AI models are selected in advanced routing
+            ui.message(_("No specific models selected."))
+        else:
+            ui.message(". ".join(models))
 
     def _start_live_session(self):
         if self.live_session or not AIHandler.is_gemini():
@@ -6565,7 +8788,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         # Translators: Standard title for opening a file
         return get_file_path(_("Open"), wildcard)
 
-    def _upload_file_to_gemini(self, file_path, mime_type, silent=False):
+    def _upload_file_to_gemini(self, file_path, mime_type, silent=False, abort_checker=None):
         p = config.conf["VisionAssistant"]["active_provider"]
         keys = AIHandler.get_keys(p)
         if not keys: return None
@@ -6581,7 +8804,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             body.append(b'')
             body.append(b'ocr')
             body.append(f"--{boundary}".encode())
-            body.append(f'Content-Disposition: form-data; name="file"; filename="{os.path.basename(file_path)}"'.encode())
+            body.append(f'Content-Disposition: form-data; name="file"; filename="{os.path.basename(file_path)}"' .encode())
             body.append(f'Content-Type: {mime_type}'.encode())
             body.append(b'')
             body.append(data)
@@ -6589,9 +8812,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             body.append(b'')
             
             for key in keys:
+                if abort_checker and abort_checker(): return None
                 try:
                     req = request.Request(url, data=b'\r\n'.join(body), headers={"Authorization": f"Bearer {key}", "Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
-                    with get_proxy_opener().open(req, timeout=120) as r:
+                    with get_proxy_opener().open(req, timeout=600) as r:
                         res = json.loads(r.read().decode())
                         return res.get("id") or res.get("name")
                 except Exception: continue
@@ -6603,29 +8827,65 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             file_size = os.path.getsize(file_path)
             headers_init = {"X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start", "X-Goog-Upload-Header-Content-Length": str(file_size), "X-Goog-Upload-Header-Content-Type": mime_type, "Content-Type": "application/json", "x-goog-api-key": api_key}
             req_init = request.Request(base_upload_url, data=json.dumps({"file": {"display_name": os.path.basename(file_path)}}).encode(), headers=headers_init, method="POST")
-            with get_proxy_opener().open(req_init, timeout=30) as r:
+            with get_proxy_opener().open(req_init, timeout=120) as r:
                 upload_url = r.headers.get("x-goog-upload-url")
-            if not upload_url: return None
-            with open(file_path, "rb") as f: data = f.read()
+            
+            if not upload_url or (abort_checker and abort_checker()): return None
+            
+            with open(file_path, 'rb') as f: data = f.read()
             req_up = request.Request(upload_url, data=data, headers={"Content-Length": str(file_size), "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize"}, method="POST")
-            with get_proxy_opener().open(req_up, timeout=300) as r:
+            with get_proxy_opener().open(req_up, timeout=900) as r:
                 res = json.loads(r.read().decode())
                 file_name_id = res['file']['name']
             
+            if abort_checker and abort_checker(): return None
+            
             p_base = AIHandler.get_base_url(p)
             check_url = f"{p_base}/v1beta/{file_name_id}"
-            for attempt in range(30):
+            
+            for attempt in range(150):
+                if abort_checker and abort_checker(): return None
                 req_check = request.Request(check_url, headers={"x-goog-api-key": api_key})
-                with get_proxy_opener().open(req_check, timeout=10) as r:
-                    data = json.loads(r.read().decode())
-                    if data.get('state') == "ACTIVE":
-                        uri = data.get('uri')
-                        GeminiHandler._register_file_uri(uri, api_key)
-                        return uri
-                time.sleep(2)
+                try:
+                    with get_proxy_opener().open(req_check, timeout=30) as r:
+                        data = json.loads(r.read().decode())
+                        if data.get('state') == "ACTIVE":
+                            uri = data.get('uri')
+                            GeminiHandler._register_file_uri(uri, api_key)
+                            
+                            duration_sec = None
+                            v_meta = data.get('videoMetadata') or data.get('video_metadata') or {}
+                            dur_str = v_meta.get('videoDuration') or v_meta.get('video_duration') or v_meta.get('duration') or ''
+                            if dur_str:
+                                try:
+                                    duration_sec = float(dur_str.rstrip('s'))
+                                except Exception:
+                                    pass
+                            if duration_sec:
+                                if not hasattr(GeminiHandler, '_file_durations'):
+                                    GeminiHandler._file_durations = {}
+                                GeminiHandler._file_durations[uri] = duration_sec
+                                
+                            return uri
+                except Exception:
+                    pass
+                for step in range(4):
+                    if abort_checker and abort_checker(): return None
+                    time.sleep(0.5)
+            return None
+        except error.HTTPError as e:
+            err_msg = GeminiHandler._handle_error(e)
+            log.error(f"File upload HTTPError: {err_msg}")
+            if hasattr(e, 'code') and e.code == 429:
+                GeminiHandler._ban_key(api_key, getattr(e, 'is_daily', False), task=None)
+            
+            msg = _("File Upload Error: {error}").format(error=err_msg)
+            self.report_status(msg)
+            if not silent:
+                show_error_dialog(msg)
             return None
         except Exception as e:
-            # Translators: Message of a dialog which may pop up while trying to upload a file
+            # Translators: Message of a dialog which may pop up while performing an AI call
             msg = _("File Upload Error: {error}").format(error=e)
             self.report_status(msg)
             if not silent:
@@ -7019,6 +9279,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             
         if "[clipboard]" in prompt_text: 
             prompt_text = prompt_text.replace("[clipboard]", api.getClipData())
+            
+        if "[clipboard_image]" in prompt_text:
+            clip_path = self._getClipboardImageFile()
+            if clip_path:
+                try:
+                    with open(clip_path, "rb") as f:
+                        d = base64.b64encode(f.read()).decode('utf-8')
+                    attachments.append({'mime_type': 'image/png', 'data': d})
+                    os.remove(clip_path)
+                except Exception:
+                    pass
+            prompt_text = prompt_text.replace("[clipboard_image]", "")
         
         if "[screen_obj]" in prompt_text:
             d, w, h, m = self._capture_navigator()
@@ -7355,7 +9627,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             finalize_running()
             if self._ocr_abort["smartfile"]:
                 return
-            full_text = "\n".join(p for _, p in sorted(((int(k), v) for k, v in done_pages.items())) if p).strip()
+            full_text = "\n".join(p for _dummy, p in sorted(((int(k), v) for k, v in done_pages.items())) if p).strip()
             if not full_text:
                 OCRProgressStore.clear(progress_key)
                 # Translators: Error message shown when the 'None' engine is used on image-based content or scanned PDFs.
@@ -7434,7 +9706,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             wx.CallAfter(setattr, self, 'current_status', _("Idle"))
             if self._ocr_abort["smartfile"]:
                 return
-            full_text = "\n".join(p for _, p in sorted(((int(k), v) for k, v in done_pages.items())) if p).strip()
+            full_text = "\n".join(p for _dummy, p in sorted(((int(k), v) for k, v in done_pages.items())) if p).strip()
             if not full_text:
                 OCRProgressStore.clear(progress_key)
                 if errors_list:
@@ -7519,7 +9791,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             wx.CallAfter(setattr, self, 'current_status', _("Idle"))
             if self._ocr_abort["smartfile"]:
                 return
-            all_text_parts = [v for _, v in sorted(((int(k), v) for k, v in done_pages.items()))]
+            all_text_parts = [v for _dummy, v in sorted(((int(k), v) for k, v in done_pages.items()))]
             if all_text_parts:
                 OCRProgressStore.clear(progress_key)
                 final_combined = "\n\n".join(all_text_parts)
@@ -7829,142 +10101,940 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             wx.CallAfter(setattr, self, 'current_status', _("Idle"))
 
     # Translators: Script description for Input Gestures dialog
-    @scriptHandler.script(description=_("Analyzes a YouTube, Instagram, Twitter or TikTok video URL."))
+    @scriptHandler.script(description=_("Analyzes a local video file or an online video URL."))
     def script_analyzeOnlineVideo(self, gesture):
         if self.toggling: self.finish()
         if getattr(self, "_dialog_open", False):
             return
-        wx.CallLater(100, self._open_video_dialog)
+
+        focused_paths = self._getFocusedExplorerFile()
+        valid_exts = (
+            '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', 
+            '.mpg', '.mpeg', '.m4v', '.3gp', '.3g2', '.ts', '.mts', 
+            '.m2ts', '.vob', '.asf', '.divx', '.ogv'
+        )
+        valid_paths = [p for p in focused_paths if p.lower().endswith(valid_exts)]
+        
+        target_path = None
+        is_local = False
+        
+        if valid_paths:
+            target_path = valid_paths[0]
+            is_local = True
+        else:
+            try:
+                clip_data = api.getClipData().strip()
+                if clip_data.startswith(("http://", "https://", "www.")):
+                    domain = urlparse(clip_data).netloc.lower()
+                    if any(d in domain for d in ["youtube.com", "youtu.be", "instagram.com", "twitter.com", "x.com", "tiktok.com"]):
+                        target_path = clip_data
+                        is_local = False
+            except Exception:
+                pass
+
+        if target_path:
+            wx.CallLater(100, self._ask_video_action, target_path, is_local)
+        else:
+            wx.CallLater(100, self._open_video_dialog)
+
+    def _ask_video_action(self, target_path, is_local):
+        self._dialog_open = True
+        choices = [
+            # Translators: Dialog choice for analyzing video content generally.
+            _("General Video Analysis"),
+            # Translators: Dialog choice for generating an audio description SRT file.
+            _("Generate Audio Description (SRT File)")
+        ]
+        
+        gui.mainFrame.prePopup()
+        try:
+            # Translators: Title of the quick action dialog.
+            dlg = wx.SingleChoiceDialog(gui.mainFrame, _("Choose action:"), _("Video Action"), choices)
+            dlg.Raise()
+            dlg.SetFocus()
+            
+            if dlg.ShowModal() == wx.ID_OK:
+                selection = dlg.GetSelection()
+                is_srt_mode = (selection == 1)
+                prog_dlg = None
+                
+                if is_srt_mode:
+                    def run_generation(dialog_instance):
+                        if is_local:
+                            threading.Thread(target=self._thread_local_video, args=(target_path, True, dialog_instance), daemon=True).start()
+                        else:
+                            threading.Thread(target=self._thread_video, args=(target_path, True, dialog_instance), daemon=True).start()
+                    
+                    prog_dlg = VideoSRTProgressDialog(gui.mainFrame, regenerate_cb=run_generation, original_path=target_path if is_local else None)
+                    prog_dlg.Show()
+                    
+                if is_local:
+                    threading.Thread(target=self._thread_local_video, args=(target_path, is_srt_mode, prog_dlg), daemon=True).start()
+                else:
+                    threading.Thread(target=self._thread_video, args=(target_path, is_srt_mode, prog_dlg), daemon=True).start()
+            
+            dlg.Destroy()
+        finally:
+            gui.mainFrame.postPopup()
+            self._dialog_open = False
 
     def _open_video_dialog(self):
         self._dialog_open = True
         if not AIHandler.is_gemini():
             self._dialog_open = False
             # Translators: Error message when video analysis is attempted with a non-Gemini provider.
-            msg = _("Video analysis is only supported by Gemini providers.")
-            self.report_status(msg)
+            wx.CallAfter(self.report_status, _("Video analysis is only supported by Gemini providers."))
             return
 
-        # Translators: Title for the video URL entry dialog
-        title = _("YouTube / Instagram / Twitter / TikTok Analysis")
-        # Translators: Label for the text entry in video dialog
-        msg = _("Enter Video URL (YouTube/Instagram/Twitter/TikTok):")
-        
         gui.mainFrame.prePopup()
         try:
-            dlg = wx.TextEntryDialog(gui.mainFrame, msg, title)
+            dlg = VideoSourceDialog(gui.mainFrame)
             dlg.Raise()
             if dlg.ShowModal() == wx.ID_OK:
-                url = dlg.GetValue()
-                if url.strip():
-                    threading.Thread(target=self._thread_video, args=(url,), daemon=True).start()
+                is_srt_mode = (dlg.action_choice.GetSelection() == 1)
+                if is_srt_mode:
+                    config.conf["VisionAssistant"]["video_chars_as_subtitle"] = dlg.chars_as_sub_check.Value
+                    config.conf["VisionAssistant"]["video_add_disclaimer"] = dlg.disclaimer_check.Value
+                
+                input_val = dlg.url_input.GetValue().strip()
+                if not input_val:
+                    dlg.Destroy()
+                    gui.mainFrame.postPopup()
+                    self._dialog_open = False
+                    return
+
+                is_local_file = False
+                try:
+                    if os.path.exists(input_val) and os.path.isfile(input_val):
+                        is_local_file = True
+                except Exception:
+                    pass
+
+                prog_dlg = None
+                if is_srt_mode:
+                    def run_generation(dialog_instance):
+                        if is_local_file:
+                            threading.Thread(target=self._thread_local_video, args=(input_val, True, dialog_instance), daemon=True).start()
+                        else:
+                            threading.Thread(target=self._thread_video, args=(input_val, True, dialog_instance), daemon=True).start()
+                    
+                    prog_dlg = VideoSRTProgressDialog(gui.mainFrame, regenerate_cb=run_generation, original_path=input_val if is_local_file else None)
+                    prog_dlg.Show()
+                    
+                if is_local_file:
+                    threading.Thread(target=self._thread_local_video, args=(input_val, is_srt_mode, prog_dlg), daemon=True).start()
+                else:
+                    threading.Thread(target=self._thread_video, args=(input_val, is_srt_mode, prog_dlg), daemon=True).start()
             dlg.Destroy()
         finally:
             gui.mainFrame.postPopup()
             self._dialog_open = False
 
-    def _thread_video(self, url):
+    def _parse_seconds_helper(self, ts_str):
         try:
-            parsed_url = urlparse(url)
-            domain = parsed_url.netloc.lower()
-            if not domain:
-                # Translators: Error message when the URL is invalid
-                wx.CallAfter(self.report_status, _("Error: Invalid URL."))
-                wx.CallAfter(setattr, self, 'current_status', _("Idle"))
-                return
+            ts_clean = str(ts_str).replace('.', ',').split(',', 1)[0].strip()
+            parts = ts_clean.split(':')
+            if len(parts) == 2:
+                return float(int(parts[0]) * 60 + int(parts[1]))
+            elif len(parts) == 3:
+                return float(int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]))
+        except Exception:
+            pass
+        return 0.0
 
-            is_youtube = any(d in domain for d in ["youtube.com", "youtu.be"])
-            is_insta = "instagram.com" in domain
-            is_twitter = any(d in domain for d in ["twitter.com", "x.com"])
-            is_tiktok = "tiktok.com" in domain
-
-            if not (is_youtube or is_insta or is_twitter or is_tiktok):
-                # Translators: Error message when the platform is not supported
-                wx.CallAfter(self.report_status, _("Error: Unsupported platform. Only YouTube, Instagram, Twitter, and TikTok are supported."))
-                wx.CallAfter(setattr, self, 'current_status', _("Idle"))
-                return
-
-            # Translators: Message reported when processing video link
-            wx.CallAfter(self.report_status, _("Processing Video..."))
+    def _is_segment_complete(self, json_str, start_sec, end_sec, total_duration):
+        try:
+            expected_end = end_sec if end_sec != -1 else total_duration
+            if not expected_end: return True
             
-            lang = get_lang_name("ai_response_language")
-            video_template = get_prompt_text("video_analysis")
-            p = apply_prompt_template(video_template, [("response_lang", lang)])
+            chunk_length = expected_end - start_sec
+            if chunk_length <= 0: return True
+            
+            clean_json = json_str.strip()
+            if "```json" in clean_json: clean_json = clean_json.split("```json")[1].split("```")[0].strip()
+            elif "```" in clean_json: clean_json = clean_json.split("```")[1].split("```")[0].strip()
+            
+            descriptions = None
+            try:
+                data = json.loads(clean_json)
+                if isinstance(data, list):
+                    descriptions = data
+                elif isinstance(data, dict):
+                    descriptions = data.get("descriptions", data.get("descriptions_list", []))
+            except Exception:
+                pass
 
-            chat_attachments = []
+            max_generated_sec = 0
+            
+            from collections import Counter
+            ts_counter = Counter()
 
-            if is_insta or is_twitter or is_tiktok:
-                if is_insta:
-                    direct_link = get_instagram_download_link(url)
-                    # Translators: Error message when the add-on fails to get a direct download link for an Instagram video.
-                    err_msg = _("Error: Could not extract Instagram video.")
-                elif is_twitter:
-                    direct_link = get_twitter_download_link(url)
-                    # Translators: Error message when the add-on fails to get a direct download link for a Twitter/X video.
-                    err_msg = _("Error: Could not extract Twitter video.")
-                else:
-                    direct_link = get_tiktok_download_link(url)
-                    # Translators: Error message when the add-on fails to get a direct download link for a TikTok video.
-                    err_msg = _("Error: Could not extract TikTok video.")
+            if descriptions and isinstance(descriptions, list):
+                if len(descriptions) < 2:
+                    return False
+                for desc in descriptions:
+                    if not isinstance(desc, dict): continue
+                    ts_str = desc.get("end") or desc.get("start")
+                    if ts_str:
+                        ts_counter[ts_str] += 1
+                        t_sec = self._parse_seconds_helper(ts_str)
+                        if t_sec > max_generated_sec:
+                            max_generated_sec = t_sec
+            else:
+                matches = re.findall(r'"end"\s*:\s*"([^"]+)"', clean_json)
+                if not matches or len(matches) < 2:
+                    return False
+                for ts_str in matches:
+                    ts_counter[ts_str] += 1
+                    t_sec = self._parse_seconds_helper(ts_str)
+                    if t_sec > max_generated_sec:
+                        max_generated_sec = t_sec
+                        
+            if any(count >= 5 for count in ts_counter.values()):
+                log.warning("Segment rejected due to AI looping on the same timestamp.")
+                return False
+            
+            if start_sec > 0 and max_generated_sec < start_sec:
+                target_to_reach = chunk_length
+                current_reached = max_generated_sec
+            else:
+                target_to_reach = expected_end
+                current_reached = max_generated_sec
 
-                if not direct_link:
-                    log.error(f"Video direct link extraction failed for: {url}")
-                    wx.CallAfter(self.report_status, err_msg)
-                    wx.CallAfter(setattr, self, 'current_status', _("Idle"))
-                    return
-                
-                # Translators: Message reported when downloading video
-                wx.CallAfter(self.report_status, _("Downloading Video..."))
-                temp_path = _download_temp_video(direct_link)
-                
-                if not temp_path:
-                    log.error(f"Video download failed for link: {direct_link}")
-                    # Translators: Error message when video download fails
-                    wx.CallAfter(self.report_status, _("Error: Download failed."))
-                    wx.CallAfter(setattr, self, 'current_status', _("Idle"))
-                    return
+            tolerance = max(60, chunk_length * 0.15)
+            
+            if current_reached >= (target_to_reach - tolerance):
+                return True
+            return False
+        except Exception as e:
+            log.warning(f"Segment validation error: {e}")
+            return True
 
-                # Translators: Message reported when uploading video to AI
-                wx.CallAfter(self.report_status, _("Uploading to AI..."))
+    def _thread_local_video(self, path, is_srt_mode=False, prog_dlg=None):
+        self._run_video_analysis(_LocalVideoSource(path), is_srt_mode=is_srt_mode, prog_dlg=prog_dlg)
+
+    def _thread_video(self, url, is_srt_mode=False, prog_dlg=None):
+        source = self._build_online_video_source(url)
+        self._run_video_analysis(source, is_srt_mode=is_srt_mode, prog_dlg=prog_dlg)
+
+    def _build_online_video_source(self, url):
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc.lower()
+        if not domain:
+            # Translators: Error message when the provided video URL is not valid.
+            return _InvalidVideoSource(_("Error: Invalid URL."))
+
+        if any(d in domain for d in ["youtube.com", "youtu.be"]):
+            return _YouTubeVideoSource(url)
+        if "instagram.com" in domain:
+            return _DownloadVideoSource(url, "instagram")
+        if any(d in domain for d in ["twitter.com", "x.com"]):
+            return _DownloadVideoSource(url, "twitter")
+        if "tiktok.com" in domain:
+            return _DownloadVideoSource(url, "tiktok")
+
+        # Translators: Error message when the video URL is from an unsupported website.
+        return _InvalidVideoSource(_("Error: Unsupported platform. Only YouTube, Instagram, Twitter, and TikTok are supported."))
+
+    def _run_video_analysis(self, source, is_srt_mode=False, prog_dlg=None):
+        intervals = []
+        master_data_list = []
+        final_res_string = ""
+        global_character_context = ""
+        # Translators: Disclaimer added at the beginning of AI-generated SRT files.
+        srt_disclaimer = _("Disclaimer: This audio description was generated by AI. Some details, including character identities or events, may not be entirely accurate.")
+
+        def abort_check():
+            if prog_dlg is not None:
                 try:
-                    file_uri = self._upload_file_to_gemini(temp_path, "video/mp4")
-                    if file_uri:
-                        chat_attachments = [{'mime_type': 'video/mp4', 'file_uri': file_uri}]
-                        # Translators: Message reported when AI is analyzing the video
-                        wx.CallAfter(self.report_status, _("Analyzing..."))
-                        res = AIHandler.call(p, attachments=chat_attachments)
-                        if res:
-                            if res.startswith("ERROR:"):
-                                log.error(f"Video analysis AI call error: {res}")
-                                wx.CallAfter(show_error_dialog, res[6:])
-                            else:
-                                wx.CallAfter(self._open_doc_chat_dialog, res, chat_attachments, res, res)
+                    return prog_dlg.abort
+                except Exception:
+                    return True
+            return False
+
+        def report(msg, speak=True):
+            if abort_check(): return
+            display_text = msg
+            if is_srt_mode and master_data_list:
+                combined_header = ""
+
+                if config.conf["VisionAssistant"].get("video_add_disclaimer", True):
+                    combined_header = srt_disclaimer
+                    
+
+                if global_character_context and config.conf["VisionAssistant"].get("video_chars_as_subtitle", True):
+                    if combined_header:
+                        combined_header += "\n\n" + global_character_context
                     else:
-                        log.error("Video upload to AI failed (file_uri is None)")
-                finally:
-                    if os.path.exists(temp_path):
-                        try: os.remove(temp_path)
+                        combined_header = global_character_context
+
+                partial_srt = convert_json_to_srt_string(master_data_list, segments=intervals[:len(master_data_list)], global_chars=combined_header)
+                if partial_srt:
+                    display_text = msg + "\n\n" + partial_srt
+            elif not is_srt_mode and final_res_string:
+                display_text = msg + "\n\n" + final_res_string.strip()
+
+            if prog_dlg is not None:
+                try: wx.CallAfter(prog_dlg.txt_status.SetValue, display_text)
+                except Exception: pass
+                if speak:
+                    if _vision_assistant_instance:
+                        _vision_assistant_instance.current_status = msg
+                    wx.CallAfter(ui.message, msg)
+            else:
+                if speak: wx.CallAfter(self.report_status, msg)
+
+        try:
+            if not source.prepare(report, abort_check):
+                if not prog_dlg: wx.CallAfter(setattr, self, 'current_status', _("Idle"))
+                return
+
+            file_uri = getattr(prog_dlg, 'file_uri', None) if prog_dlg else None
+            current_key = getattr(prog_dlg, 'current_key', None) if prog_dlg else None
+            local_path = getattr(prog_dlg, 'local_path', None) if prog_dlg else None
+            duration_sec = None
+
+            if source.is_direct:
+                file_uri = source.direct_uri
+                duration_sec = source.duration(file_uri)
+            else:
+                if not local_path or not os.path.exists(local_path):
+                    local_path = source.ensure_local(self, report, abort_check)
+                    if abort_check(): return
+                    if not local_path:
+                        if not prog_dlg: wx.CallAfter(setattr, self, 'current_status', _("Idle"))
+                        return
+                    if prog_dlg: prog_dlg.local_path = local_path
+                
+                if not file_uri:
+                    file_uri, duration_sec, current_key = GeminiHandler.upload_and_get_duration(local_path, report_callback=report, abort_checker=abort_check)
+                    if not file_uri:
+                        # Translators: Error message shown when uploading the video to the AI server fails.
+                        report(_("Upload failed."))
+                        if not prog_dlg: wx.CallAfter(setattr, self, 'current_status', _("Idle"))
+                        return
+                    if prog_dlg:
+                        prog_dlg.file_uri = file_uri
+                        prog_dlg.current_key = current_key
+                else:
+                    duration_sec = source.duration(file_uri)
+
+            intervals.clear()
+            chunk_minutes = config.conf["VisionAssistant"].get("video_srt_chunk_minutes", 5)
+            chunk_size_sec = chunk_minutes * 60
+
+            if is_srt_mode and chunk_size_sec > 0 and duration_sec and duration_sec > chunk_size_sec:
+                start = 0
+                while start < duration_sec:
+                    end = min(start + chunk_size_sec, duration_sec)
+                    intervals.append((start, end))
+                    start = end
+            else:
+                intervals.append((0, duration_sec if duration_sec else -1))
+
+            lang = get_lang_name("ai_response_language")
+
+            if is_srt_mode:
+                # Translators: Status message when the AI is analyzing the whole video to extract character names and appearances.
+                report(_("Extracting characters (First pass)..."))
+                char_template = get_prompt_text("video_character_extraction")
+                char_prompt = apply_prompt_template(char_template, [("response_lang", lang)])
+
+                char_res, file_uri, current_key = GeminiHandler.process_video_task(
+                    local_path, char_prompt, None, None, True, report, abort_check, file_uri, current_key, source.is_direct
+                )
+                if prog_dlg:
+                    prog_dlg.file_uri = file_uri
+                    prog_dlg.current_key = current_key
+
+                if char_res and not char_res.startswith("ERROR:"):
+                    try:
+                        clean_json = char_res.strip()
+                        if "```json" in clean_json: clean_json = clean_json.split("```json")[1].split("```")[0].strip()
+                        elif "```" in clean_json: clean_json = clean_json.split("```")[1].split("```")[0].strip()
+                        chars = []
+                        try:
+                            char_data = json.loads(clean_json)
+                            if "characters" in char_data: chars = char_data["characters"]
+                            else:
+                                for v in char_data.values():
+                                    if isinstance(v, list):
+                                        chars = v; break
+                            if not chars and isinstance(char_data, list): chars = char_data
                         except Exception: pass
 
-            elif is_youtube:
-                # Translators: Message reported when analyzing YouTube video
-                wx.CallAfter(self.report_status, _("Analyzing YouTube..."))
-                chat_attachments = [{'mime_type': 'video/mp4', 'file_uri': url}]
-                res = AIHandler.call(p, attachments=chat_attachments)
-                if res:
-                    if res.startswith("ERROR:"):
-                        log.error(f"YouTube analysis AI call error: {res}")
-                        wx.CallAfter(show_error_dialog, res[6:])
+                        if not chars:
+
+                            blocks = re.findall(r'"name"\s*:\s*"([^"]+)"\s*,\s*"description"\s*:\s*"([^"]+)"', clean_json, re.IGNORECASE)
+                            for block in blocks: chars.append({"name": block[0], "description": block[1]})
+
+                        if chars:
+                            ctx_lines = []
+                            for c in chars:
+                                if isinstance(c, dict):
+
+                                    n = c.get('name') or c.get('Name') or 'Unknown'
+                                    d = c.get('description') or c.get('Description') or ''
+                                    ctx_lines.append(f"- {n}: {d}")
+                                elif isinstance(c, str):
+                                    ctx_lines.append(f"- {c}")
+
+                            if ctx_lines:
+                                # Translators: Header for the list of extracted characters in the generated subtitle.
+                                dict_title = _("GLOBAL CHARACTER DICTIONARY:") + "\n"
+                                global_character_context = dict_title + "\n".join(ctx_lines)
+                    except Exception as e:
+                        log.warning(f"Failed to parse character extraction JSON: {e}")
+
+            master_data_list.clear()
+            segment_success = True
+            final_res_string = ""
+            prev_descriptions = ""
+
+            for seg_idx, (start_sec, end_sec) in enumerate(intervals):
+                if abort_check(): return
+
+                needs_cooldown = (seg_idx > 0) or (seg_idx == 0 and is_srt_mode)
+                if needs_cooldown:
+                    cooldown_seconds = 30 if (seg_idx == 0 and is_srt_mode) else 20
+                    # Translators: Status message shown when the add-on pauses briefly between API requests to prevent hitting server rate limits.
+                    report(_("Cooling down to prevent rate limits ({seconds} seconds)...").format(seconds=cooldown_seconds))
+                    for step in range(cooldown_seconds * 2):
+                        if abort_check(): return
+                        time.sleep(0.5)
+
+                if is_srt_mode:
+                    video_template = get_prompt_text("video_audio_description")
+                else:
+                    video_template = get_prompt_text("video_analysis")
+
+                h_start, m_start, s_start = int(start_sec//3600), int((start_sec%3600)//60), int(start_sec%60)
+                h_end, m_end, s_end = int(end_sec//3600), int((end_sec%3600)//60), int(end_sec%60) if end_sec != -1 else (0, 0, 0)
+
+                start_str = f"{h_start:02d}:{m_start:02d}:{s_start:02d}"
+                end_str = f"{h_end:02d}:{m_end:02d}:{s_end:02d}" if end_sec != -1 else "end"
+
+                segment_template = get_prompt_text("video_segment_instruction")
+                end_text = f"{end_str} ({int(end_sec)} seconds)" if end_sec != -1 else "the end of the video"
+                segment_instruction = apply_prompt_template(segment_template, [
+                    ("start_str", f"{start_str} ({int(start_sec)} seconds)"),
+                    ("end_str", end_text)
+                ])
+
+                p = apply_prompt_template(video_template, [("response_lang", lang)])
+                if global_character_context:
+                    p = f"{global_character_context}\n\n{p}"
+                if prev_descriptions:
+                    prev_context_template = get_prompt_text("video_previous_context")
+                    if prev_context_template:
+                        prev_context_str = apply_prompt_template(prev_context_template, [("prev_descriptions", prev_descriptions)])
+                        p = f"{p}\n\n{prev_context_str}"
+
+                prompt_with_segment = f"{segment_instruction}\n\n{p}" if len(intervals) > 1 else p
+
+                if len(intervals) > 1:
+                    # Translators: Status message reporting which segment of the video is currently being analyzed. {current} is the current segment number and {total} is the total segment count.
+                    report(_("Analyzing video segment {current} of {total}...").format(current=seg_idx + 1, total=len(intervals)))
+                else:
+                    # Translators: Message reported when AI is analyzing the video
+                    report(_("Analyzing video..."))
+
+                validator = None
+                if is_srt_mode and len(intervals) > 1:
+                    validator = lambda r: self._is_segment_complete(r, start_sec, end_sec, duration_sec)
+
+                seg_res, file_uri, current_key = GeminiHandler.process_video_task(
+                    local_path, prompt_with_segment, start_sec, end_sec, is_srt_mode, report, abort_check, file_uri, current_key, source.is_direct, validator=validator
+                )
+                if prog_dlg:
+                    prog_dlg.file_uri = file_uri
+                    prog_dlg.current_key = current_key
+
+                if not seg_res or seg_res.startswith("ERROR:"):
+                    segment_success = False
+                    break
+
+                if is_srt_mode:
+                    master_data_list.append(seg_res)
+                    prev_descriptions = ""
+                    try:
+                        clean_res = seg_res.strip()
+                        if "```json" in clean_res: clean_res = clean_res.split("```json")[1].split("```")[0].strip()
+                        elif "```" in clean_res: clean_res = clean_res.split("```")[1].split("```")[0].strip()
+                        parsed = json.loads(clean_res)
+                        descs = parsed if isinstance(parsed, list) else parsed.get("descriptions", parsed.get("descriptions_list", []))
+                        if descs:
+                            cutoff_sec = max(0, end_sec - 120)
+                            recent = []
+                            for d in descs:
+                                try:
+                                    t = d.get("end", d.get("start", ""))
+                                    t = t.split(",")[0].split(".")[0]
+                                    parts = t.split(":")
+                                    if len(parts) >= 3:
+                                        ds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                                        if ds >= cutoff_sec:
+                                            label = d.get("label", d.get("text", "")).strip()
+                                            s = d.get("start", "")
+                                            if label:
+                                                recent.append(f"[{s}] {label}")
+                                except Exception:
+                                    continue
+                            if recent:
+                                prev_descriptions = "\n".join(recent[-10:])
+                    except Exception:
+                        pass
+                else:
+                    if len(intervals) > 1:
+                        final_res_string += f"\n\n--- [Part {seg_idx + 1}: {start_str} - {end_str}] ---\n" + seg_res
                     else:
-                        wx.CallAfter(self._open_doc_chat_dialog, res, chat_attachments, res, res)
+                        final_res_string = seg_res
+
+                if seg_idx + 1 < len(intervals):
+                    # Translators: Status message shown when a video segment finishes processing and the system is moving to the next one. {current} is the completed segment number.
+                    report(_("Segment {current} finished. Preparing next...").format(current=seg_idx+1))
+                else:
+                    # Translators: Status message when all segments are done and it is finalizing.
+                    report(_("Finalizing..."))
+
+            if abort_check(): return
+
+            if segment_success:
+                if is_srt_mode:
+                    combined_header = ""
+                    if config.conf["VisionAssistant"].get("video_add_disclaimer", True):
+                        combined_header = srt_disclaimer
+                        
+                    if global_character_context and config.conf["VisionAssistant"].get("video_chars_as_subtitle", True):
+                        if combined_header:
+                            combined_header += "\n\n" + global_character_context
+                        else:
+                            combined_header = global_character_context
+
+                    srt_content = convert_json_to_srt_string(master_data_list, segments=intervals, global_chars=combined_header)
+                    if srt_content:
+                        wx.CallAfter(prog_dlg.on_finished, srt_content)
+                    else:
+                        # Translators: Error message shown when the AI output cannot be converted into a valid SRT subtitle file.
+                        wx.CallAfter(prog_dlg.on_error, _("Failed to parse AI output into SRT."))
+                else:
+                    attachments = [{'mime_type': 'video/mp4', 'file_uri': file_uri}] if file_uri else []
+                    wx.CallAfter(self._open_doc_chat_dialog, final_res_string.strip(), attachments, final_res_string.strip(), final_res_string.strip())
+            else:
+                # Translators: Error message reported when video segment analysis fails after multiple retries due to network issues.
+                report_err = seg_res[6:] if seg_res and seg_res.startswith("ERROR:") else _("Connection failed after retries.")
+                log.error(f"Video analysis failed permanently: {report_err}")
+                if prog_dlg: wx.CallAfter(prog_dlg.on_error, report_err)
+                else: wx.CallAfter(show_error_dialog, report_err)
+
+            if not prog_dlg: wx.CallAfter(setattr, self, 'current_status', _("Idle"))
+        except Exception as e:
+            log.error(f"{source.log_label}: {e}", exc_info=True)
+            report(source.error_message)
+            if not prog_dlg: wx.CallAfter(setattr, self, 'current_status', _("Idle"))
+        finally:
+            source.cleanup()
+
+
+    def _compress_video(self, input_path):
+        ffmpeg_path = self._ensure_ffmpeg()
+        if not ffmpeg_path:
+            return None
+
+        fd, temp_path = tempfile.mkstemp(suffix=".mp4", prefix="vision_assistant_comp_")
+        os.close(fd)
+
+        cmd = [
+            ffmpeg_path,
+            "-i", input_path,
+            "-vf", "scale=-2:min(480\\,ih)",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "30",
+            "-c:a", "aac",
+            "-b:a", "64k",
+            "-movflags", "+faststart",
+            "-y",
+            temp_path
+        ]
+
+        startupinfo = None
+        creationflags = 0
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            creationflags = 0x08000000
+
+        try:
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo, creationflags=creationflags, check=True)
+            try:
+                if os.path.getsize(temp_path) >= os.path.getsize(input_path):
+                    os.remove(temp_path)
+                    return input_path
+            except Exception: pass
+            return temp_path
+        except subprocess.CalledProcessError as e:
+            log.error(f"Video compression failed: {e.stderr}")
+            try:
+                os.remove(temp_path)
+            except Exception: pass
+            return None
+
+
+
+    def _ensure_ffmpeg(self):
+
+        ffmpeg_lib_path = os.path.join(lib_dir, "ffmpeg.exe")
+
+        if os.path.exists(ffmpeg_lib_path):
+            return ffmpeg_lib_path
+
+        try:
+            result = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                return "ffmpeg"
+        except Exception:
+            pass
+
+        # Translators: Title of dialog asking user to download ffmpeg
+        title = _("Download ffmpeg?")
+        # Translators: Message asking user to download ffmpeg for video recording
+        message = _(
+            "Screen recording requires ffmpeg (approximately 70MB download).\n\n"
+            "Download ffmpeg now to the addon's lib folder?\n\n"
+            "This is a one-time download."
+        )
+
+        user_choice = [wx.ID_NO]
+        dlg_closed = threading.Event()
+
+        def ask_user():
+            gui.mainFrame.prePopup()
+            try:
+                dlg = wx.MessageDialog(gui.mainFrame, message, title, wx.YES_NO | wx.ICON_QUESTION)
+                dlg.Raise()
+                dlg.SetFocus()
+                user_choice[0] = dlg.ShowModal()
+                dlg.Destroy()
+            finally:
+                gui.mainFrame.postPopup()
+                dlg_closed.set()
+
+        wx.CallAfter(ask_user)
+        dlg_closed.wait()
+
+        if user_choice[0] != wx.ID_YES:
+            # Translators: Message when user cancels ffmpeg download
+            wx.CallAfter(ui.message, _("Recording cancelled. ffmpeg is required for video recording."))
+            return None
+
+        return self._download_ffmpeg(ffmpeg_lib_path)
+
+    def _download_ffmpeg(self, target_path):
+        try:
+            # Translators: Status message when downloading ffmpeg
+            msg_start = _("Downloading ffmpeg, please wait...")
+            wx.CallAfter(self.report_status, msg_start)
+
+            download_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+
+            opener = get_proxy_opener(download_url)
+            req = request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+
+            zip_path = target_path + ".zip"
+            with opener.open(req, timeout=300) as response:
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+
+                with open(zip_path, 'wb') as f:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+
+                        if total_size > 0:
+                            percent = int((downloaded / total_size) * 100)
+                            # Translators: Progress message during ffmpeg download, {percent} is download percentage
+                            self.current_status = _("Downloading ffmpeg: {percent}%").format(percent=percent)
+
+                            if downloaded % (10 * 1024 * 1024) < 1024 * 1024:
+                                wx.CallAfter(ui.message, self.current_status)
+
+            # Translators: Status message when extracting ffmpeg
+            self.current_status = _("Extracting ffmpeg...")
+            wx.CallAfter(ui.message, self.current_status)
+            
+
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                ffmpeg_file = None
+                for name in zip_ref.namelist():
+                    if name.endswith('bin/ffmpeg.exe'):
+                        ffmpeg_file = name
+                        break
+
+                if ffmpeg_file:
+                    temp_extract = os.path.join(tempfile.gettempdir(), "ffmpeg_temp_extract")
+                    os.makedirs(temp_extract, exist_ok=True)
+                    zip_ref.extract(ffmpeg_file, temp_extract)
+
+                    extracted_path = os.path.join(temp_extract, ffmpeg_file)
+                    
+                    shutil.move(extracted_path, target_path)
+
+                    try:
+                        shutil.rmtree(temp_extract)
+                    except Exception:
+                        pass
+
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
+
+            if os.path.exists(target_path):
+                # Translators: Success message after ffmpeg download completes
+                msg_success = _("ffmpeg downloaded successfully!")
+                wx.CallAfter(self.report_status, msg_success)
+                wx.CallAfter(setattr, self, 'current_status', _("Idle"))
+                return target_path
+            else:
+                raise Exception("Failed to extract ffmpeg.exe")
+
+        except Exception as e:
+            log.error(f"ffmpeg download failed: {e}", exc_info=True)
+            # Translators: Error message when ffmpeg download fails
+            wx.CallAfter(show_error_dialog, _("Failed to download ffmpeg: {error}").format(error=str(e)))
+            wx.CallAfter(setattr, self, 'current_status', _("Idle"))
+            return None
+
+
+    # Translators: Script description for Input Gestures dialog
+    @scriptHandler.script(description=_("Starts or stops local video recording of the screen."))
+    def script_recordLocalVideo(self, gesture):
+        if self.toggling:
+            self.finish()
+
+        if not self.is_video_recording:
+            threading.Thread(target=self._start_local_video_recording, daemon=True).start()
+        else:
+            threading.Thread(target=self._stop_and_analyze_recording, daemon=True).start()
+
+
+    def _start_local_video_recording(self, force_desktop=False):
+        if not AIHandler.is_gemini():
+            # Translators: Error message when video recording is attempted with a non-Gemini provider
+            wx.CallAfter(self.report_status, _("Video recording is only supported by Gemini providers."))
+            return
+
+        if check_screen_curtain_active():
+            return
+
+        ffmpeg_path = self._ensure_ffmpeg()
+        if not ffmpeg_path:
+            return
+
+        try:
+            fd, temp_path = tempfile.mkstemp(suffix=".mp4", prefix="vision_assistant_rec_")
+            os.close(fd)
+            self.recording_output_path = temp_path
+
+            if not force_desktop:
+                # Translators: Status message reported when starting video recording
+                wx.CallAfter(self.report_status, _("Starting recording..."))
+
+            crop_filter = ""
+            
+            if not force_desktop:
+                try:
+                    fg_obj = api.getForegroundObject()
+                    if fg_obj and fg_obj.location:
+                        x, y, w, h = fg_obj.location
+                        
+
+                        screen_w = ctypes.windll.user32.GetSystemMetrics(0)
+                        screen_h = ctypes.windll.user32.GetSystemMetrics(1)
+
+                        if x < 0:
+                            w += x
+                            x = 0
+                        if y < 0:
+                            h += y
+                            y = 0
+                            
+                        if x + w > screen_w:
+                            w = screen_w - x
+                        if y + h > screen_h:
+                            h = screen_h - y
+
+                        if w > 100 and h > 100:
+                            w = w if w % 2 == 0 else w - 1
+                            h = h if h % 2 == 0 else h - 1
+                            crop_filter = f"crop={w}:{h}:{x}:{y},"
+                except Exception as e:
+                    log.warning(f"Failed to calculate window dimensions: {e}")
+
+            cmd = [
+                ffmpeg_path,
+                "-f", "gdigrab",
+                "-framerate", "15",
+                "-i", "desktop",
+            ]
+
+            vf_string = f"{crop_filter}scale=854:-2,format=yuv420p"
+
+            cmd.extend([
+                "-vf", vf_string,
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "28",
+                "-y",
+                temp_path
+            ])
+
+            startupinfo = None
+            creationflags = 0
+            if sys.platform == "win32":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                creationflags = 0x08000000
+
+            self.recording_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+                startupinfo=startupinfo,
+                creationflags=creationflags
+            )
+
+            self.is_video_recording = True
+            self.recording_start_time = time.time()
+
+            def check_process_status():
+                if self.is_video_recording and self.recording_process:
+                    if self.recording_process.poll() is not None:
+                        self.recording_process = None
+                        self.is_video_recording = False
+                        
+                        if not force_desktop:
+                            log.warning("ffmpeg crashed on window capture. Retrying full screen.")
+                            # Translators: Message when window capture fails and switches to full screen capture
+                            wx.CallAfter(ui.message, _("Window capture failed. Trying full screen..."))
+                            threading.Thread(target=self._start_local_video_recording, args=(True,), daemon=True).start()
+                        else:
+                            # Translators: Error message when ffmpeg fails completely
+                            wx.CallAfter(show_error_dialog, _("Recording failed to start. FFmpeg encountered a fatal error."))
+
+            wx.CallAfter(wx.CallLater, 2000, check_process_status)
+
+            if not force_desktop:
+                # Translators: Message when video recording starts
+                msg = _("Recording started. Press the same shortcut again to stop.")
+                def announce_start():
+                    if self.is_video_recording:
+                        tones.beep(800, 100)
+                        self.report_status(msg)
+                wx.CallAfter(wx.CallLater, 2500, announce_start)
+
+        except Exception as e:
+            log.error(f"Failed to start recording: {e}", exc_info=True)
+            self.is_video_recording = False
+            self.recording_process = None
+            # Translators: Error message when recording fails to start
+            show_error_dialog(_("Failed to start recording: {error}").format(error=str(e)))
+
+    def _stop_and_analyze_recording(self):
+        if not self.is_video_recording or not self.recording_process:
+            return
+
+        try:
+            self.is_video_recording = False
+
+            try:
+                self.recording_process.communicate(input=b'q', timeout=5)
+            except Exception:
+                try:
+                    self.recording_process.terminate()
+                except Exception:
+                    pass
+
+            time.sleep(0.5)
+
+            duration = time.time() - self.recording_start_time if self.recording_start_time else 0
+
+            wx.CallAfter(tones.beep, 400, 100)
+
+            if not os.path.exists(self.recording_output_path):
+                log.error("Recording file not found after stopping ffmpeg")
+                # Translators: Error when recorded video file is not found
+                wx.CallAfter(show_error_dialog, _("Recording file not found."))
+                return
+
+            file_size = os.path.getsize(self.recording_output_path)
+            size_mb = file_size / (1024 * 1024)
+
+            if file_size < 1024:
+                log.error(f"Recording file too small: {file_size} bytes")
+                # Translators: Error when recorded video file is too small/corrupted
+                wx.CallAfter(show_error_dialog, _("The recording was too short or the video file is corrupted. Please try recording for at least a few seconds."))
+                return
+
+            # Translators: Status message showing recording info, {duration} is seconds, {size} is MB
+            wx.CallAfter(ui.message, _("Recording stopped ({duration:.0f} seconds, {size:.1f} MB)").format(
+                duration=duration, size=size_mb
+            ))
+
+            def report(msg):
+                if _vision_assistant_instance:
+                    _vision_assistant_instance.current_status = msg
+                wx.CallAfter(ui.message, msg)
+
+            file_uri, _dur, current_key = GeminiHandler.upload_and_get_duration(self.recording_output_path, report_callback=report)
+
+            if not file_uri:
+                log.error("Upload returned None - upload failed")
+                wx.CallAfter(setattr, self, 'current_status', _("Idle"))
+                return
+
+            lang = get_lang_name("ai_response_language")
+            video_template = get_prompt_text("local_video_recording")
+            prompt = apply_prompt_template(video_template, [("response_lang", lang)])
+
+            # Translators: Message when AI is analyzing the recorded video
+            report(_("Analyzing video..."))
+
+            res, file_uri, current_key = GeminiHandler.process_video_task(
+                self.recording_output_path, prompt, None, None, False, report, None, file_uri, current_key, False
+            )
+
+            if res:
+                if res.startswith("ERROR:"):
+                    log.error(f"Video analysis error: {res}")
+                    wx.CallAfter(show_error_dialog, res[6:])
+                else:
+                    chat_attachments = [{'mime_type': 'video/mp4', 'file_uri': file_uri}]
+                    wx.CallAfter(self._open_doc_chat_dialog, res, chat_attachments, res, res)
 
             wx.CallAfter(setattr, self, 'current_status', _("Idle"))
 
         except Exception as e:
-            log.error(f"Video analysis thread failed: {e}", exc_info=True)
-            # Translators: Generic error message when something goes wrong during the online video analysis process.
-            wx.CallAfter(self.report_status, _("Error processing video."))
+            log.error(f"Failed to process recording: {e}", exc_info=True)
+            # Translators: Error message when processing recorded video fails
+            wx.CallAfter(show_error_dialog, _("Failed to process recording: {error}").format(error=str(e)))
             wx.CallAfter(setattr, self, 'current_status', _("Idle"))
+        finally:
+            self.recording_process = None
+            if self.recording_output_path and os.path.exists(self.recording_output_path):
+                try:
+                    os.remove(self.recording_output_path)
+                except Exception:
+                    pass
+            self.recording_output_path = None
+            self.recording_start_time = None
 
     # Translators: Script description for Input Gestures dialog
     @scriptHandler.script(description=_("Attempts to solve a CAPTCHA on the screen or navigator object."))
@@ -8923,6 +11993,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         "kb:u": "checkUpdate",
         "kb:shift+t": "translateClipboard",
         "kb:shift+v": "analyzeOnlineVideo",
+        "kb:control+v": "recordLocalVideo",
         "kb:space": "showLastResult",
         "kb:h": "showHelp",
         "kb:e": "toggleUIExplorer",
@@ -8930,4 +12001,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         "kb:l": "labelObject",
         "kb:shift+l": "manageOrScanApp",
         "kb:control+l": "toggleLiveAssistant",
+        "kb:alt+s": "openSettings",
+        "kb:alt+q": "reportQuotaExhaustedKeys",
+        "kb:alt+m": "reportSelectedModels",
     }

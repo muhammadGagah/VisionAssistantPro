@@ -25,6 +25,7 @@ Check **"Advanced Model Routing (Task-specific)"** to unlock detailed control. T
 - **Speech-to-Text (STT):** Choose a specific model for dictation.
 - **Text-to-Speech (TTS):** Choose a model for generating audio.
 - **AI Operator Model:** Select a specific model for autonomous computer operation tasks.
+- **Video Model:** Select a specific model for video analysis and audio description generation.
 *Note: Unsupported features (e.g., TTS for Groq) will be automatically hidden.*
 
 ### 1.3 Advanced Endpoint Configuration (Custom Provider)
@@ -54,10 +55,12 @@ If you are running a local AI model server on your computer:
 
 ### 1.4 General Preferences
 - **OCR Engine:** Choose between **Chrome (Fast)** for quick results or **AI (Advanced)** for superior layout preservation.
-    - *Note:* If you select "AI (Advanced)" but your provider is set to OpenAI/Groq, the addon will intelligently route the image to your active provider's vision model.
 - **TTS Voice:** Select your preferred voice style. This list updates dynamically based on your active provider.
 - **Creativity (Temperature):** Controls the randomness of the AI. Lower values are better for accurate translation/OCR.
 - **Proxy URL:** Configure this if AI services are restricted in your region (supports local proxies like `127.0.0.1` or bridge URLs).
+- **Direct Output (No Chat Window):** Check this if you want the AI to simply read the result aloud without opening an interactive chat window.
+- **Copy AI responses to clipboard:** Automatically copies every AI answer to your system clipboard for easy pasting.
+- **Clean Markdown in Chat:** Uncheck this if you prefer to see raw formatting symbols instead of a clean, formatted text view.
 
 ## 2. Command Layer & Shortcuts
 
@@ -74,7 +77,8 @@ To prevent keyboard conflicts, this add-on uses a **Command Layer**.
 | **R**         | Text Refiner             | Summarize, Fix Grammar, Explain, or run **Custom Prompts**.                 |
 | **V**         | Object Vision            | Describes the current navigator object.                                     |
 | **O**         | Full Screen Vision       | Analyzes the entire screen layout and content.                              |
-| **Shift + V** | Online Video Analysis    | Analyze **YouTube**, **Instagram**, **TikTok**, or **Twitter (X)** videos.  |
+| **Shift + V** | Video Analysis    | Analyze local video files or online **YouTube**, **Instagram**, **TikTok**, or **Twitter (X)** videos.  |
+| **Control + V** | Local Video Recording  | Records a silent video of your screen and analyzes the actions and layout.  |
 | **D**         | Document Reader          | Advanced reader for PDF and images with page range selection.               |
 | **F**         | **Smart File Action**    | Context-aware recognition from selected image, PDF, or TIFF files.          |
 | **A**         | Audio Transcription      | Transcribe MP3, WAV, or OGG files into text.                                |
@@ -87,14 +91,9 @@ To prevent keyboard conflicts, this add-on uses a **Command Layer**.
 | **U**         | Update Check             | Manually check GitHub for the latest version of the add-on.                 |
 | **Space**     | Recall Last Result       | Shows the last AI response in a chat dialog for review or follow-up.        |
 | **H**         | Commands Help            | Displays a list of all available shortcuts.                                 |
-
-### 2.1 Document Reader Shortcuts (Inside Viewer)
-- **Ctrl + PageDown:** Move to the next page.
-- **Ctrl + PageUp:** Move to the previous page.
-- **Alt + A:** Open a chat dialog to ask questions about the document.
-- **Alt + R:** Force a **Re-scan with AI** using your active provider.
-- **Alt + G:** Generate and save a high-quality audio file (WAV/MP3). *Hidden if provider doesn't support TTS.*
-- **Alt + S / Ctrl + S:** Save the extracted text as a TXT or HTML file.
+| **Alt + S**   | Settings                 | Opens the Vision Assistant Pro settings dialog.                             |
+| **Alt + Q**   | Quota Exhausted Keys Report | Reports the number of Gemini API keys that have exceeded their daily quota and their reset time. |
+| **Alt + M**   | Routing Audit            | Reports the AI models currently selected in advanced routing.               |
 
 ## 3. AI Operator - Autonomous Computer Control
 
@@ -125,44 +124,167 @@ The operator understands a wide range of commands:
 - **Administrator Applications**: If NVDA is not running with Administrator privileges, the operator may not be able to interact with windows that require elevated permissions. This is a Windows security limitation, not a bug in the add-on.
 - **Best Practices**: For best results, give clear and specific commands. "Click the blue Submit button at the bottom of the form" will almost always work better than just "Click the button".
 
-## 4. Custom Prompts & Variables
+## 4. Video Analysis & Audio Description
+
+> **Note:** The Video Analysis and Audio Description features are strictly powered by the **Google Gemini** provider. Ensure that your active provider in the add-on settings is set to Google Gemini.
+
+Vision Assistant Pro introduces powerful video processing capabilities designed specifically for blind users. It can analyze both online videos and local screen recordings to provide highly detailed visual descriptions and generate professional Audio Description scripts (SRT).
+
+### 4.1 Local Screen Recording (Control + V)
+If you encounter a silent video, an animation, or a tutorial on your screen, you can capture it directly:
+1. Press **NVDA + Shift + V** to enter the Command Layer, then press **Control + V**.
+2. The add-on will silently record your screen in the background.
+3. Press **Control + V** again to stop recording.
+4. The AI will then analyze the recorded video segment and provide a highly detailed description of the scene, characters, and actions.
+
+### 4.2 Video Analysis (Shift + V)
+You can analyze both local video files and online videos. Simply select a local video file in Windows Explorer, or copy an online video link to your clipboard. You can also press **Shift + V** anywhere (like inside a media player) to open a dialog where you can browse for a video file or paste a URL manually.
+- **Supported Online Platforms:** YouTube, Instagram, TikTok, and Twitter (X).
+- The AI will automatically detect the local file or the URL, process the video, and provide a comprehensive visual description and audio summary.
+
+### 4.3 Audio Description Generation (SRT)
+For a more structured experience, the add-on can generate professional Audio Description scripts in standard SubRip (SRT) format. 
+- **Smart Gap-Timing:** The AI listens to the audio track and specifically anchors its visual descriptions to natural pauses and silent gaps to intelligently minimize dialogue overlap.
+- **Character Tracking:** The engine performs a pre-pass to extract distinct characters based on immutable facial features. It builds a global dictionary to accurately track and label characters across different scenes without confusion.
+- **Verbatim Text OCR:** Any text appearing on the screen (signs, phones, credits) is strictly quoted verbatim.
+- **How to Use:** To listen to the generated subtitle, simply place the `.srt` file in the same folder as your video file and give it the exact same name. Then, configure your media player (e.g., VLC or PotPlayer) to route the subtitle text directly to your screen reader or TTS engine during playback.
+
+### 4.4 Synchronized Audio Narration (MP3 Export)
+Beyond just creating text-based SRT files, the add-on functions as a complete Audio Description production tool by synthesizing the descriptions into speech and mixing them with the video. When generating an MP3 for local video files, you have multiple mixing modes:
+- **Standard AD (Mix Voice):** The narration is overlaid directly on top of the video's audio. You will be prompted if you want to apply **Audio Ducking** (lowering the background volume during descriptions) to ensure the narration is clear.
+- **Extended AD (Pause Audio):** The engine pauses the original video audio during descriptions, ensuring you never miss a single word of the original dialogue or the AI narration.
+- **YouTube Videos:** For YouTube sources (which are not downloaded locally), the MP3 export will strictly contain the synchronized AI voice track without the background video audio.
+
+## 5. Advanced Document & Image Reader
+
+Vision Assistant Pro includes a highly optimized Document Reader designed for multi-page PDFs, complex images, and even iPhone HEIC formats.
+
+### 5.1 Batch Processing & Resume
+You don't need to read a massive document all at once. Enter a page range (e.g., `1-20`), and the AI will process all pages in the background. If NVDA crashes or you interrupt the scan, the add-on will remember your progress and offer to **Resume** exactly where it left off!
+
+### 5.2 Smart File Action
+You don't always need to open the document first. In Windows File Explorer, simply highlight a PDF or image and press **D** (Document Reader) or **F** (Smart File Action) inside the Command Layer. The add-on will instantly bypass the file dialog and begin processing the highlighted file.
+
+### 5.3 Document Viewer Shortcuts
+When the Document Reader window is open, you can use the following shortcuts:
+- **Ctrl + PageDown:** Move to the next page.
+- **Ctrl + PageUp:** Move to the previous page.
+- **Alt + A:** Open a chat dialog to ask questions about the document.
+- **Alt + R:** Force a **Re-scan with AI** using your active provider.
+- **Alt + G:** Generate and save a high-quality audio file (WAV/MP3). *(Hidden if provider doesn't support TTS).*
+- **Alt + S / Ctrl + S:** Save the extracted text as a TXT or HTML file.
+
+## 6. Semantic AI Labeling & UI Explorer
+
+Stuck in an application with "unlabeled button" everywhere? The Semantic AI Labeling engine solves this permanently.
+
+### 6.1 Permanent Object Labeling (L)
+Focus your screen reader on an unlabeled graphic or button and press **L** in the Command Layer. The AI will look at the button visually, determine its function, and apply a permanent label. 
+*Unlike older screen reader labeling tools, this add-on uses an advanced hybrid "Object Signature" system (AutomationId/ControlID). Your custom labels will survive window resizing, monitor switching, and application updates!*
+
+### 6.2 Full Application Scan (Shift + L)
+Press **Shift + L** to scan the entire active window at once. The AI will find all unlabeled elements and intelligently name them in one go. You can later manage, rename, or batch-delete these labels from the built-in Label Manager.
+
+### 6.3 UI Explorer (E)
+Need to interact with an element without navigating to it manually? Press **E** to activate the UI Explorer. The AI will scan the screen and generate an accessible list of every clickable element (ignoring system noise like taskbars). Pick an item from the list, and the add-on will instantly click it for you.
+
+## 7. Live Voice Assistant
+
+The Live Assistant turns Vision Assistant Pro into a real-time, interactive copilot.
+*(Note: This feature is exclusive to Google Gemini and Gemini-compatible Custom providers).*
+
+- **Activation:** Press **Control + L** in the Command Layer to open the Live Assistant dialog.
+- **Real-time Interaction:** Talk naturally through your microphone. The AI will simultaneously listen to your voice and look at your active screen. You can ask questions like "What am I looking at?" or "Read the third paragraph to me."
+- **Customization:** Inside the dialog, you can change the AI's Voice Style (e.g., Professional, Friendly, Upbeat) and adjust its "Thinking Depth" to control how deeply it reasons before answering.
+
+## 8. Custom Prompts & Variables
 
 You can manage prompts in **Settings > Prompts > Manage Prompts...**.
 
 ### Supported Variables
 - `[selection]`: Currently selected text.
 - `[clipboard]`: Clipboard content.
+- `[clipboard_image]`: Image currently in clipboard.
 - `[screen_obj]`: Screenshot of the navigator object.
 - `[screen_fg_obj]`: Screenshot of the active foreground window.
 - `[screen_full]`: Full screen screenshot.
 - `[file_ocr]`: Select image/PDF file for text extraction.
 - `[file_read]`: Select document for reading (TXT, Code, PDF).
 - `[file_audio]`: Select audio file for analysis (MP3, WAV, OGG).
+- `{target_lang}`: Current target language.
+- `{source_lang}`: Current source language.
+- `{response_lang}`: Current AI response language.
+- `{swap_target}`: Fallback language for smart swap translation.
+- `{swap_instruction}`: Smart swap translation instruction block.
+
+## 9. Real-World Use Cases (Which feature should I use?)
+
+Vision Assistant Pro is packed with advanced tools. Here are some common scenarios to help you choose the right one:
+
+- **Scenario: You want to understand the complete layout of a complicated window or inaccessible app.**
+  *Solution:* Press **O** (Full Screen Vision). The AI will analyze the entire screen and describe exactly where elements, texts, and buttons are positioned.
+
+- **Scenario: You found an image on a webpage or an unlabeled graphic in a document.**
+  *Solution:* Move your navigator object to the graphic and press **V** (Object Vision). The AI will describe specifically what that image contains.
+
+- **Scenario: You want to watch a movie or video clip with audio descriptions.**
+  *Solution:* Press **Shift + V** on your video and choose **"Generate Audio Description (SRT File)"**. When it finishes, click **"Generate Synced Narration (MP3)"** and select **"Extended AD"**. The add-on will create an audio track that intelligently pauses the movie's dialogue to describe the visual scenes.
+
+- **Scenario: You encountered an app full of "unlabeled buttons".**
+  *Solution:* Press **L** to permanently label the specific button using AI. Or, press **Shift + L** to scan and label the entire window at once. If you just want to click something quickly, press **E** (UI Explorer) to get a list of all clickable items.
+
+- **Scenario: You need to bypass an inaccessible CAPTCHA.**
+  *Solution:* Press **C** (CAPTCHA Solver). The AI will automatically capture the CAPTCHA, solve it, and inject the answer into the correct field.
+
+- **Scenario: You want to read a long, 50-page PDF document.**
+  *Solution:* Press **D** (Document Reader), set your provider to Google Gemini, and enter the page range `1-50`. The add-on will extract the text accurately in the background.
+
+- **Scenario: You are watching a silent video tutorial or animation on your screen.**
+  *Solution:* Press **Control + V** to start recording the screen. Let the tutorial play, then press **Control + V** again. The AI will explain exactly what was demonstrated.
 
 ***
 **Note:** An active internet connection is required for all AI features. Multi-page documents are processed automatically.
 
-## 5. Support & Community
+## 10. Support & Community
 
 Stay updated with the latest news, features, and releases:
 - **Telegram Channel:** [t.me/VisionAssistantPro](https://t.me/VisionAssistantPro)
 - **GitHub Issues:** For bug reports and feature requests.
 
-## 6. Project Supporters
+## 11. Project Supporters
 
 A heartfelt thank you to our community members who support the continuous development and maintenance of this project through their generous financial contributions:
 
 *   **@Alyabani94**
 *   **Ali Alamri**
 *   **Ilya**
-*   **Anonymous Supporter** (`UQDd...CnMY`)
+*   **Arne Siebert**
 *   **leonardo0216**
 *   **Sergei Fleytin**
+*   **Anonymous Supporter**
 
 *If you wish to support the project financially and see your name here, you can find the **Donate** option in the NVDA Tools menu (Vision Assistant submenu) or during the setup process after installation.*
 
 
 ---
+## Changes for 2026.07.15
+
+*   **Intelligent API Model Filtering**: Complete overhaul of the model filtering system to use a pure blacklist approach instead of whitelists. Added stronger filtering keywords (`embedding`, `bison`, `gecko`, `audio`, `realtime`, `babbage`, `moderation`, `deep`, `antigravity`, `computer`) to ensure the main chat model dropdown remains perfectly clean and future-proof, while keeping all specialized models accessible in the Advanced Routing section.
+*   **Advanced Routing Search**: All Advanced Model Routing dropdowns (OCR, STT, TTS, Operator, Video, Live) and the eSpeak Variant selector are now fully searchable. You can quickly type to filter and find your desired model or variant.
+*   **New Command Layer Shortcuts**:
+    *   **Settings (`Alt + S`)**: Instantly opens the Vision Assistant Pro settings dialog.
+    *   **Quota Exhausted Keys Report (`Alt + Q`)**: Reports the exact number of Gemini API keys that have exceeded their daily quota, identifying which specific model they are exhausted on, and announces their exact reset time.
+    *   **Routing Audit (`Alt + M`)**: Audits and announces your current Advanced Routing configuration, reading out which models are actively selected for specialized tasks (skipping default settings).
+*   **Video Analyzer Complete Overhaul**: The Video Analyzer has been completely transformed! Previously, it only provided a basic description of online videos. Now, it is a comprehensive video processing suite tailored for blind users:
+    *   **Local Screen Recording (`Control+V`)**: You can now record silent videos directly from your screen. The AI will analyze the recorded segment and provide a highly detailed description of the scene, layout, and actions.
+    *   **Audio Description Generation (SRT)**: The add-on can now generate highly detailed Audio Description scripts (in standard SRT format) for videos, complete with smart gap-timing to intelligently anchor descriptions to natural pauses in the audio track, and verbatim OCR for any on-screen text.
+    *   **Synchronized Audio Narration (MP3 Export)**: Beyond text-based subtitles, the add-on can synthesize the Audio Description into speech, automatically mix it with the video's original audio track, apply audio ducking (lowering background volume during descriptions), and export the final synchronized result as an MP3 file!
+    *   **Smart Video File Action**: If you focus on a local video file and press the video shortcut, the add-on will automatically detect it and process the file directly.
+    *   **Advanced Character Tracking**: The AI now performs a character extraction pre-pass. It builds a global character dictionary and tracks characters accurately segment-by-segment without confusing identities.
+    *   **Video Analysis Configuration**: Added new settings to control SRT chunk sizes, character subtitling, and disclaimers.
+    *   **Extended Model Routing**: You can now explicitly select specialized video models (`gemini_video_model`, `custom_video_model`) in the Advanced Model Routing settings.
+*   **Smart API Quota Management**: Enhanced handling of 429 (Daily Limit) errors by tracking quotas per-model. If a key hits its daily limit on one model, it is intelligently quarantined for that specific model only, leaving the key available for use with other models.
+
 ## Changes for 7.0.0
 
 *   **Resuming Unfinished Scans**: Added a resume feature for both the Document Reader and Smart File Actions. If a scan gets interrupted, you can now continue from where it stopped instead of starting over from scratch.
